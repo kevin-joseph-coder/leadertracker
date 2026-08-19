@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hyperliquid BTC Cohort Tracker</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-1:      #fcfcfb;
+    --page:           #f9f9f7;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --grid:           #e1e0d9;
+    --axis:           #c3c2b7;
+    --border:         rgba(11,11,11,0.10);
+    /* four buckets - validated set S1, see README */
+    --open-long:      #2a78d6;
+    --close-short:    #eda100;
+    --open-short:     #eb6834;
+    --close-long:     #1baf7a;
+    --long-ink:       #2a78d6;
+    --short-ink:      #eb6834;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface-1:      #1a1a19;
+      --page:           #0d0d0d;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --grid:           #2c2c2a;
+      --axis:           #383835;
+      --border:         rgba(255,255,255,0.10);
+      --open-long:      #3987e5;
+      --close-short:    #c98500;
+      --open-short:     #d95926;
+      --close-long:     #199e70;
+      --long-ink:       #3987e5;
+      --short-ink:      #d95926;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1:      #1a1a19;
+    --page:           #0d0d0d;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --grid:           #2c2c2a;
+    --axis:           #383835;
+    --border:         rgba(255,255,255,0.10);
+    --open-long:      #3987e5;
+    --close-short:    #c98500;
+    --open-short:     #d95926;
+    --close-long:     #199e70;
+    --long-ink:       #3987e5;
+    --short-ink:      #d95926;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px 20px 48px;
+    background: var(--page);
+    color: var(--text-primary);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+  h1 { font-size: 19px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+  .status { margin-left: auto; font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  .status.stale { color: var(--open-short); }
+
+  /* --- summary strip --- */
+  .strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 12px; margin-bottom: 22px; }
+  .tile {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px;
+  }
+  .tile .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin-bottom: 6px; }
+  .tile .value { font-size: 24px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; }
+  .tile .sub { font-size: 12px; color: var(--text-secondary); margin-top: 3px; }
+  .v-long  { color: var(--long-ink); }
+  .v-short { color: var(--short-ink); }
+
+  /* --- panels --- */
+  .panel {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px 18px; margin-bottom: 22px;
+  }
+  .panel-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
+  h2 { font-size: 14px; font-weight: 600; margin: 0; }
+  .panel-note { font-size: 12px; color: var(--text-muted); margin: 2px 0 14px; }
+
+  .controls { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+  button {
+    font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--border); background: transparent; color: var(--text-secondary);
+  }
+  button:hover { background: var(--grid); }
+  button[aria-pressed="true"] { background: var(--text-primary); color: var(--surface-1); border-color: var(--text-primary); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 0 0 12px; padding: 0; list-style: none; font-size: 12px; color: var(--text-secondary); }
+  .legend li { display: flex; align-items: center; gap: 6px; }
+  .swatch { width: 11px; height: 11px; border-radius: 3px; flex: none; }
+  .legend .side { color: var(--text-muted); font-size: 11px; }
+
+  .chart-box { position: relative; height: 340px; }
+
+  /* --- tables --- */
+  .scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 7px 10px; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  thead th {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--text-muted); font-weight: 500; border-bottom: 1px solid var(--axis);
+  }
+  tbody tr { border-bottom: 1px solid var(--grid); }
+  tbody tr:last-child { border-bottom: none; }
+  .addr { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .addr a { color: inherit; text-decoration: none; border-bottom: 1px dotted var(--axis); }
+  .addr a:hover { color: var(--text-primary); }
+  .pos-long  { color: var(--long-ink); font-weight: 600; }
+  .pos-short { color: var(--short-ink); font-weight: 600; }
+  .pnl-up { color: var(--close-long); }
+  .pnl-dn { color: var(--open-short); }
+  .empty { color: var(--text-muted); padding: 22px 0; text-align: center; }
+  #hourlyTable { display: none; margin-top: 14px; }
+  #hourlyTable td:first-child { font-variant-numeric: tabular-nums; }
+  footer { font-size: 12px; color: var(--text-muted); margin-top: 26px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Hyperliquid BTC Cohort Tracker</h1>
+    <span class="status" id="status">loading…</span>
+  </header>
+
+  <!-- summary strip -->
+  <section class="strip" id="strip"></section>
+
+  <!-- hourly flow -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Hourly BTC flow</h2>
+      <div class="controls">
+        <button type="button" data-hours="48"  aria-pressed="false">48h</button>
+        <button type="button" data-hours="168" aria-pressed="true">7d</button>
+        <button type="button" id="tableToggle" aria-pressed="false">Table</button>
+      </div>
+    </div>
+    <p class="panel-note">
+      USD notional per hour. Plotted above the axis is buying pressure, below is selling pressure.
+    </p>
+    <ul class="legend">
+      <li><span class="swatch" style="background:var(--open-long)"></span>Open long <span class="side">↑ buy</span></li>
+      <li><span class="swatch" style="background:var(--close-short)"></span>Close short <span class="side">↑ buy</span></li>
+      <li><span class="swatch" style="background:var(--open-short)"></span>Open short <span class="side">↓ sell</span></li>
+      <li><span class="swatch" style="background:var(--close-long)"></span>Close long <span class="side">↓ sell</span></li>
+    </ul>
+    <div class="chart-box"><canvas id="flow"></canvas></div>
+    <div class="scroll" id="hourlyTable"></div>
+  </section>
+
+  <!-- open positions -->
+  <section class="panel">
+    <div class="panel-head"><h2>Open BTC positions</h2></div>
+    <p class="panel-note">Latest snapshot per active wallet holding a non-zero BTC perp position.</p>
+    <div class="scroll" id="positions"></div>
+  </section>
+
+  <footer>
+    Cohort: top-100 Hyperliquid wallets by 7d PnL, account value $100k–$1M.
+    Ranking is account-wide, not BTC-specific; only BTC perp fills and positions are tracked.
+  </footer>
+</div>
+
+<script>
+const REFRESH_MS = 60_000;
+const HOUR = 3600_000;
+let hours = 168, chart = null, lastHourly = null;
+
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+const usd = n => {
+  const a = Math.abs(n);
+  const s = n < 0 ? "-$" : "$";
+  if (a >= 1e9) return s + (a / 1e9).toFixed(2) + "B";
+  if (a >= 1e6) return s + (a / 1e6).toFixed(2) + "M";
+  if (a >= 1e3) return s + (a / 1e3).toFixed(1) + "K";
+  return s + a.toFixed(0);
+};
+const num = (n, d = 4) => n.toLocaleString(undefined, { maximumFractionDigits: d });
+const short = a => a.slice(0, 6) + "…" + a.slice(-4);
+
+// ---------- summary strip ----------
+function renderStrip(s) {
+  document.getElementById("strip").innerHTML = `
+    <div class="tile">
+      <div class="label">Open long</div>
+      <div class="value v-long">${usd(s.total_long_notional_usd)}</div>
+      <div class="sub">${s.long_wallets} wallet${s.long_wallets === 1 ? "" : "s"}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Open short</div>
+      <div class="value v-short">${usd(s.total_short_notional_usd)}</div>
+      <div class="sub">${s.short_wallets} wallet${s.short_wallets === 1 ? "" : "s"}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Net exposure</div>
+      <div class="value ${s.net_notional_usd >= 0 ? "v-long" : "v-short"}">${usd(s.net_notional_usd)}</div>
+      <div class="sub">${s.net_notional_usd >= 0 ? "net long" : "net short"}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Active wallets</div>
+      <div class="value">${s.active_wallets}</div>
+      <div class="sub">${s.wallets_with_position} holding BTC</div>
+    </div>`;
+}
+
+// ---------- positions table ----------
+function renderPositions(rows) {
+  const el = document.getElementById("positions");
+  if (!rows.length) { el.innerHTML = `<p class="empty">No open BTC positions in the cohort.</p>`; return; }
+  el.innerHTML = `
+    <table>
+      <thead><tr>
+        <th>Wallet</th><th>Side</th><th>Size (BTC)</th><th>Notional</th>
+        <th>Entry price</th><th>Unrealized PnL</th>
+      </tr></thead>
+      <tbody>${rows.map(r => {
+        const long = r.signed_size > 0;
+        const pnl = r.unrealized_pnl || 0;
+        return `<tr>
+          <td class="addr"><a href="https://app.hyperliquid.xyz/explorer/address/${r.address}"
+              target="_blank" rel="noopener">${short(r.address)}</a></td>
+          <td class="${long ? "pos-long" : "pos-short"}">${long ? "LONG" : "SHORT"}</td>
+          <td>${num(Math.abs(r.signed_size))}</td>
+          <td>${usd(r.position_value_usd || 0)}</td>
+          <td>${r.entry_px ? "$" + num(r.entry_px, 1) : "—"}</td>
+          <td class="${pnl >= 0 ? "pnl-up" : "pnl-dn"}">${usd(pnl)}</td>
+        </tr>`;
+      }).join("")}</tbody>
+    </table>`;
+}
+
+// ---------- hourly series ----------
+// Fill gaps so the axis stays continuous even in hours with no fills.
+function series(payload, nHours) {
+  const byHour = new Map(payload.buckets.map(b => [b.hour_bucket, b]));
+  const end = Math.floor(Date.now() / HOUR) * HOUR;
+  const out = [];
+  for (let t = end - (nHours - 1) * HOUR; t <= end; t += HOUR) {
+    const b = byHour.get(t);
+    out.push({
+      t,
+      openLong:   b ? b.net_long_opened  : 0,
+      closeShort: b ? b.closed_short     : 0,
+      openShort:  b ? b.net_short_opened : 0,
+      closeLong:  b ? b.closed_long      : 0,
+      fills:      b ? b.fill_count       : 0,
+    });
+  }
+  return out;
+}
+
+function renderChart(payload) {
+  const data = series(payload, hours);
+  const surface = css("--surface-1");
+  const labels = data.map(d => d.t);
+
+  // Positive = buying pressure, negative = selling pressure. Dataset order
+  // sets stack order: opens sit against the axis, closes outside them.
+  const sets = [
+    { label: "Open long",   key: "openLong",   color: css("--open-long"),   sign:  1 },
+    { label: "Close short", key: "closeShort", color: css("--close-short"), sign:  1 },
+    { label: "Open short",  key: "openShort",  color: css("--open-short"),  sign: -1 },
+    { label: "Close long",  key: "closeLong",  color: css("--close-long"),  sign: -1 },
+  ].map(s => ({
+    label: s.label,
+    data: data.map(d => s.sign * d[s.key]),
+    backgroundColor: s.color,
+    borderColor: surface,
+    borderWidth: { top: 0, bottom: 0, left: 1, right: 1 },
+    borderRadius: 3,
+    borderSkipped: false,
+    stack: "flow",
+  }));
+
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById("flow"), {
+    type: "bar",
+    data: { labels, datasets: sets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: "index", intersect: false },
+      layout: { padding: { top: 4 } },
+      scales: {
+        x: {
+          stacked: true,
+          grid: { display: false },
+          border: { color: css("--axis") },
+          ticks: {
+            color: css("--text-muted"), font: { size: 11 },
+            maxRotation: 0,
+            // Pin labels to fixed clock boundaries. Chart.js autoSkip would
+            // space them evenly across the range instead, which lands two
+            // ticks inside one day and prints the same date twice.
+            autoSkip: false,
+            callback(v, i) {
+              const d = new Date(labels[i]);
+              if (hours > 72) {
+                return d.getHours() === 0
+                  ? d.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+                  : "";
+              }
+              return d.getHours() % 6 === 0
+                ? d.toLocaleTimeString(undefined, { hour: "numeric" })
+                : "";
+            },
+          },
+        },
+        y: {
+          stacked: true,
+          grid: { color: css("--grid"), drawTicks: false },
+          border: { display: false },
+          ticks: {
+            color: css("--text-muted"), font: { size: 11 }, padding: 8,
+            callback: v => usd(Math.abs(v)),
+          },
+        },
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: css("--text-primary"),
+          titleColor: css("--surface-1"),
+          bodyColor: css("--surface-1"),
+          padding: 10, cornerRadius: 6, displayColors: true, boxPadding: 3,
+          callbacks: {
+            title: items => new Date(labels[items[0].dataIndex])
+              .toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric" }) + ":00",
+            label: c => `  ${c.dataset.label}: ${usd(Math.abs(c.parsed.y))}`,
+            afterBody: items => {
+              const d = data[items[0].dataIndex];
+              const buy = d.openLong + d.closeShort, sell = d.openShort + d.closeLong;
+              return ["", `Net: ${usd(buy - sell)}   (${d.fills} fills)`];
+            },
+          },
+        },
+      },
+    },
+  });
+}
+
+function renderHourlyTable(payload) {
+  const data = series(payload, hours).slice().reverse();
+  document.getElementById("hourlyTable").innerHTML = `
+    <table>
+      <thead><tr>
+        <th>Hour</th><th>Open long</th><th>Close short</th>
+        <th>Open short</th><th>Close long</th><th>Net</th>
+      </tr></thead>
+      <tbody>${data.map(d => {
+        const net = d.openLong + d.closeShort - d.openShort - d.closeLong;
+        return `<tr>
+          <td>${new Date(d.t).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric" })}</td>
+          <td>${usd(d.openLong)}</td><td>${usd(d.closeShort)}</td>
+          <td>${usd(d.openShort)}</td><td>${usd(d.closeLong)}</td>
+          <td class="${net >= 0 ? "pnl-up" : "pnl-dn"}">${usd(net)}</td>
+        </tr>`;
+      }).join("")}</tbody>
+    </table>`;
+}
+
+// ---------- data loading ----------
+async function load() {
+  const status = document.getElementById("status");
+  try {
+    const bust = "?t=" + Date.now();
+    const [pos, hr] = await Promise.all([
+      fetch("positions.json" + bust).then(r => r.json()),
+      fetch("hourly.json" + bust).then(r => r.json()),
+    ]);
+    renderStrip(pos.summary);
+    renderPositions(pos.positions);
+    lastHourly = hr;
+    renderChart(hr);
+    if (document.getElementById("tableToggle").getAttribute("aria-pressed") === "true") renderHourlyTable(hr);
+
+    const age = Date.now() - pos.generated_at;
+    status.textContent = "updated " + new Date(pos.generated_at).toLocaleTimeString();
+    status.classList.toggle("stale", age > 15 * 60_000);
+  } catch (e) {
+    status.textContent = "no data yet — run the poller";
+    status.classList.add("stale");
+  }
+}
+
+// ---------- controls ----------
+document.querySelectorAll("button[data-hours]").forEach(b => {
+  b.addEventListener("click", () => {
+    hours = +b.dataset.hours;
+    document.querySelectorAll("button[data-hours]").forEach(o =>
+      o.setAttribute("aria-pressed", String(o === b)));
+    if (lastHourly) {
+      renderChart(lastHourly);
+      if (document.getElementById("tableToggle").getAttribute("aria-pressed") === "true")
+        renderHourlyTable(lastHourly);
+    }
+  });
+});
+
+document.getElementById("tableToggle").addEventListener("click", e => {
+  const on = e.currentTarget.getAttribute("aria-pressed") !== "true";
+  e.currentTarget.setAttribute("aria-pressed", String(on));
+  document.getElementById("hourlyTable").style.display = on ? "block" : "none";
+  if (on && lastHourly) renderHourlyTable(lastHourly);
+});
+
+// Repaint on theme change so chart colors follow the tokens.
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+  if (lastHourly) renderChart(lastHourly);
+});
+
+load();
+setInterval(load, REFRESH_MS);
+</script>
+</body>
+</html>
