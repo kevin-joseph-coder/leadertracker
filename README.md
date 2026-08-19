@@ -177,6 +177,25 @@ short, close long). Position encodes market direction, hue identifies the
 bucket. Tooltips show every value as a positive USD notional plus the hourly
 net.
 
+**Positioning is state, not flow.** The four bucket columns and Net measure
+what the cohort *traded* during an hour; the Positioning column measures what
+it *held* at the end of it — total long notional minus total short notional,
+across every wallet snapshotted in that hour. It comes from
+`position_snapshots` (the last snapshot per wallet inside the hour), not from
+`fills`.
+
+It is deliberately not filtered on `is_active`. Snapshots are only ever
+written for wallets active at the time, so each hour already contains exactly
+the wallets tracked then; filtering on the current flag would retroactively
+rewrite past hours whenever a wallet drops out. This is why the newest hour
+can differ slightly from the Net exposure tile, which does filter to active
+wallets — a wallet deactivated after its last snapshot still counts in that
+hour's history.
+
+An hour shows `—` rather than `$0` when no snapshot exists for it. **Position
+history only begins when the poller first ran** — `clearinghouseState`
+returns current state only, so unlike fills there is nothing to backfill.
+
 **All times are UTC.** The aggregation floors a millisecond epoch, so the
 buckets are UTC hour boundaries with no timezone attached; the page renders
 every label in UTC to match. Rendering them in browser-local time instead

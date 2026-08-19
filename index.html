@@ -131,6 +131,7 @@
   .pnl-up { color: var(--close-long); }
   .pnl-dn { color: var(--open-short); }
   .empty { color: var(--text-muted); padding: 22px 0; text-align: center; }
+  .nodata { color: var(--text-muted); }
   #hourlyTable { display: none; margin-top: 14px; }
   #hourlyTable td:first-child { font-variant-numeric: tabular-nums; }
   footer { font-size: 12px; color: var(--text-muted); margin-top: 26px; }
@@ -280,6 +281,9 @@ function series(payload, nHours) {
       openShort:  b ? b.net_short_opened : 0,
       closeLong:  b ? b.closed_long      : 0,
       fills:      b ? b.fill_count       : 0,
+      // null, not 0: positions are only known for hours the poller actually
+      // ran, and a flat cohort is a different fact from an unobserved hour.
+      netPosition: b && b.net_position_usd !== undefined ? b.net_position_usd : null,
     });
   }
   return out;
@@ -378,7 +382,7 @@ function renderHourlyTable(payload) {
     <table>
       <thead><tr>
         <th>Hour (UTC)</th><th>Open long</th><th>Close long</th>
-        <th>Open short</th><th>Close short</th><th>Net</th>
+        <th>Open short</th><th>Close short</th><th>Net</th><th>Positioning</th>
       </tr></thead>
       <tbody>${data.map(d => {
         // Net stays buy-side minus sell-side regardless of column order:
@@ -389,6 +393,9 @@ function renderHourlyTable(payload) {
           <td>${usd(d.openLong)}</td><td>${usd(d.closeLong)}</td>
           <td>${usd(d.openShort)}</td><td>${usd(d.closeShort)}</td>
           <td class="${net >= 0 ? "pnl-up" : "pnl-dn"}">${usd(net)}</td>
+          <td class="${d.netPosition === null ? "nodata"
+                     : d.netPosition >= 0 ? "pos-long" : "pos-short"}">${
+            d.netPosition === null ? "—" : usd(d.netPosition)}</td>
         </tr>`;
       }).join("")}</tbody>
     </table>`;
