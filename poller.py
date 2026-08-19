@@ -173,7 +173,8 @@ def poll_fills(conn, lookback_ms: int = None) -> dict:
             start_time = now_ms - FIRST_RUN_LOOKBACK_MS
 
         try:
-            fills = hl.user_fills_by_time(address, start_time)
+            # Both sources: TWAP child fills are absent from userFillsByTime.
+            fills = hl.all_fills_by_time(address, start_time, delay=FILL_CALL_DELAY)
         except hl.HLError as e:
             stats["errors"] += 1
             log(f"  fills {address[:10]}... failed: {e}")

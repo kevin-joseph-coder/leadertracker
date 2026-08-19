@@ -112,6 +112,39 @@ both size and notional.
 Only `coin == "BTC"` is stored, which is unambiguously the BTC **perp** —
 spot BTC trades under `UBTC`.
 
+### TWAP fills are invisible to `userFillsByTime`
+
+The single most consequential finding. **`userFills` and `userFillsByTime`
+omit the child fills of TWAP orders entirely.** They are reported only by
+`userTwapSliceFills` / `userTwapSliceFillsByTime`, wrapped as
+`{"fill": {...}, "twapId": n}`.
+
+This is silent — nothing in the ordinary response hints that anything is
+absent. It surfaced only because a wallet's reconstructed position jumped
+**+186.67 BTC with no trade behind it**. Querying that exact interval
+returned zero fills from both `userFills` and `userFillsByTime`; the trades
+were sitting in the TWAP endpoint. For that wallet:
+
+| source | BTC fills |
+|---|---|
+| `userFillsByTime` | 814 |
+| `userTwapSliceFillsByTime` | 1,706 |
+
+Roughly two thirds of its BTC activity was missing, which understated both
+its traded volume in the flow chart and its position history.
+
+Auditing the cohort by chaining each wallet's fills — a group's exit
+position must equal the next group's entry — found **34 of 37 BTC-trading
+wallets fully explained by ordinary fills, and 3 with gaps** (+186.67,
+−20.00 and +5.00 BTC). So it affects a minority of wallets but distorts
+those badly. `hl.all_fills_by_time()` reads both endpoints and is what the
+poller uses; after that change the same audit reports **0 of 37 gappy**.
+
+Ingesting TWAP slices added 3,037 BTC fills to a 7-day backfill (21,233 →
+24,270) and visibly moved the chart — one hour's Open Long went from
+$20.52M to $23.08M. It also doubled the fill loop's rate-limit weight, which
+is why `POLL_INTERVAL_SECONDS` is 600 rather than 300; see `config.py`.
+
 ### `userFillsByTime` caps at 2000 fills
 
 Confirmed exactly: 4 of the first 14 wallets returned precisely 2000 on a
@@ -159,10 +192,13 @@ cycle.
 watermark; `INSERT OR IGNORE` on `fill_id` makes re-ingestion idempotent.
 
 **Rate limits.** `/info` is IP-limited by request weight (~1200/min).
-`clearinghouseState` costs 2, `userFillsByTime` 20+. With 100 wallets the
-fill loop must be spread over more than a minute, hence `FILL_CALL_DELAY =
-1.2s` in `config.py`. A full cycle takes roughly 25s + 120s, inside the 300s
-interval.
+`clearinghouseState` costs 2; each of the two fills endpoints costs 20 plus
+a per-item surcharge. Every wallet needs **both** fills calls, so 100
+wallets is ~4000 weight for fills alone — the loop cannot run faster than
+~3.5 minutes without tripping 429s. `FILL_CALL_DELAY` is therefore 1.5s
+applied after every individual call (1.0s measured out at ~2400 weight/min
+and produced real 429s), giving ~300s of fills + ~25s of positions per
+cycle, inside the 600s interval.
 
 **Cohort ranking is account-wide, not BTC-specific.** Hyperliquid's
 leaderboard isn't asset-segmented, so wallets are ranked by overall 7d PnL
@@ -192,9 +228,34 @@ can differ slightly from the Net exposure tile, which does filter to active
 wallets — a wallet deactivated after its last snapshot still counts in that
 hour's history.
 
-An hour shows `—` rather than `$0` when no snapshot exists for it. **Position
-history only begins when the poller first ran** — `clearinghouseState`
-returns current state only, so unlike fills there is nothing to backfill.
+An hour shows `—` rather than `$0` when no snapshot exists for it.
+
+The 7 days of history predating the poller were **reconstructed once** from
+fill data, by anchoring on an observed snapshot and unwinding the fills
+behind it:
+
+```
+position(T) = position_now - sum(delta for every fill after T)
+delta       = +sz for a buy (side "B"), -sz for a sell (side "A")
+```
+
+Summation is used rather than walking `startPosition` forwards, because
+fills cannot be sorted into execution order — every fill of one order shares
+a single millisecond timestamp and `tid` does not run in sequence. On a real
+19-fill order, `startPos(next) == startPos(cur)+delta(cur)` held for 7 of
+137 consecutive pairs. Addition is commutative, so the total over an
+interval is right regardless of ordering.
+
+Reconstructed rows are written at exact hour boundaries with a NULL
+`account_value_usd`; real snapshots land mid-hour, so where both exist the
+aggregation's `MAX(poll_time)` prefers the real one. The one-shot script
+that produced them has been deleted — it was a migration, not part of the
+pipeline. To redo it, the method is above; note it is only correct because
+TWAP slices are now ingested (see below).
+
+Verified two ways: chaining every wallet's fills leaves **0 of 37 with an
+unexplained position move**, and the last reconstructed hour ($55,133,230)
+flows continuously into the first real snapshot ($55,125,370).
 
 **All times are UTC.** The aggregation floors a millisecond epoch, so the
 buckets are UTC hour boundaries with no timezone attached; the page renders

@@ -78,22 +78,22 @@ def total_account_value(address: str):
 FILLS_PAGE_CAP = 2000
 
 
-def user_fills_by_time(address: str, start_time: int, max_pages: int = 25,
-                       page_delay: float = 0.6) -> list:
-    """All fills at or after start_time (ms epoch), paging through the cap.
-
-    Weight: 20 + more per 20 items returned, per page.
-    """
+def _paged_fills(req_type: str, address: str, start_time: int, unwrap=None,
+                 max_pages: int = 25, page_delay: float = 0.6) -> list:
+    """Page a fills-style endpoint past its 2000-record cap."""
     out, seen = [], set()
     cursor = int(start_time)
 
     for _ in range(max_pages):
-        page = info({"type": "userFillsByTime", "user": address, "startTime": cursor})
+        page = info({"type": req_type, "user": address, "startTime": cursor})
         if not isinstance(page, list) or not page:
             break
 
         fresh = 0
-        for f in page:
+        for item in page:
+            f = unwrap(item) if unwrap else item
+            if f is None:
+                continue
             key = (f.get("tid"), f.get("time"), f.get("coin"), f.get("oid"))
             if key not in seen:
                 seen.add(key)
@@ -106,13 +106,54 @@ def user_fills_by_time(address: str, start_time: int, max_pages: int = 25,
         # Re-request the boundary millisecond rather than skipping past it -
         # several fills can share one timestamp. The dedup above absorbs the
         # overlap; no progress means we're done.
-        next_cursor = max(int(f.get("time") or 0) for f in page)
+        raw_times = [int((unwrap(i) if unwrap else i).get("time") or 0) for i in page]
+        next_cursor = max(raw_times)
         if fresh == 0 or next_cursor < cursor:
             break
         cursor = next_cursor
         time.sleep(page_delay)
 
     return out
+
+
+def user_fills_by_time(address: str, start_time: int) -> list:
+    """Ordinary fills at or after start_time (ms epoch).
+
+    Does NOT include TWAP child fills - see user_twap_slice_fills_by_time.
+    Weight: 20 + more per 20 items returned, per page.
+    """
+    return _paged_fills("userFillsByTime", address, start_time)
+
+
+def _unwrap_twap(item):
+    """TWAP slices arrive as {"fill": {...}, "twapId": n}."""
+    if not isinstance(item, dict):
+        return None
+    f = item.get("fill")
+    if not isinstance(f, dict):
+        return None
+    return dict(f, twapId=item.get("twapId"))
+
+
+def user_twap_slice_fills_by_time(address: str, start_time: int) -> list:
+    """Child fills of TWAP orders.
+
+    These are reported ONLY here - userFills and userFillsByTime omit them
+    entirely. Verified on a cohort wallet that showed 1,706 BTC TWAP slices
+    against 814 ordinary BTC fills; without these its position appeared to
+    jump 186 BTC with no trade behind it, and its traded volume was
+    understated by roughly two thirds.
+    """
+    return _paged_fills("userTwapSliceFillsByTime", address, start_time,
+                        unwrap=_unwrap_twap)
+
+
+def all_fills_by_time(address: str, start_time: int, delay: float = 0.0) -> list:
+    """Every fill that moves a position: ordinary plus TWAP slices."""
+    fills = user_fills_by_time(address, start_time)
+    if delay:
+        time.sleep(delay)
+    return fills + user_twap_slice_fills_by_time(address, start_time)
 
 
 def fetch_leaderboard() -> list:
