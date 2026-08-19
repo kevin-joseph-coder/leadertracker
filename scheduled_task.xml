@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  Daily cohort refresh at 00:00 UTC ("UTC open").
+
+  The Z suffix on StartBoundary is load-bearing: Task Scheduler stores
+  triggers in LOCAL time by default, so a plain "18:00:00" would drift by an
+  hour every time Central flips between CST and CDT. With Z the boundary is
+  anchored to UTC and fires at 00:00 UTC year round.
+
+  Register with:
+    Register-ScheduledTask -TaskName "HL cohort refresh" -Xml (Get-Content scheduled_task.xml -Raw)
+-->
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Refreshes the Hyperliquid BTC cohort (leaderboard shortlist + role/BTC enrichment) once a day at 00:00 UTC. Additive only - never retires wallets.</Description>
+    <URI>\HL cohort refresh</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2026-08-20T00:00:00Z</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <!-- The refresh is ~15-25 min of rate-limited API calls; a laptop on
+         battery must not skip it. -->
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <!-- Generous: the run is long by design, but must not hang forever. -->
+    <ExecutionTimeLimit>PT2H</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>C:\Windows\System32\cmd.exe</Command>
+      <Arguments>/c C:\Python311\python.exe cohort.py &gt;&gt; cohort.log 2&gt;&amp;1</Arguments>
+      <WorkingDirectory>c:\Users\Kevin\Desktop\Projects\leadertracker</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

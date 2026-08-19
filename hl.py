@@ -47,6 +47,21 @@ def clearinghouse_state(address: str) -> dict:
     return info({"type": "clearinghouseState", "user": address})
 
 
+def user_role(address: str):
+    """Account class: "user", "vault", "subAccount", "agent", or "missing".
+
+    Verified live: returns {"role": "user"} for an ordinary wallet. Returns
+    None if the response doesn't carry a role, which callers should treat as
+    "unknown" rather than as a rejection.
+    """
+    data = info({"type": "userRole", "user": address})
+    if isinstance(data, dict):
+        role = data.get("role")
+        if isinstance(role, str):
+            return role
+    return None
+
+
 def total_account_value(address: str):
     """Total account equity: spot + every perp clearinghouse.
 

@@ -27,8 +27,10 @@ from config import (
     FILL_OVERLAP_MS,
     FIRST_RUN_LOOKBACK_MS,
     MIN_ACCOUNT_VALUE,
+    MIN_COHORT_SIZE,
     POLL_INTERVAL_SECONDS,
     POSITION_CALL_DELAY,
+    RETIRE_VLM_30D_FLOOR,
     WEB_DIR,
 )
 
@@ -46,6 +48,22 @@ def active_traders(conn) -> list:
     ]
 
 
+def cached_vlm_30d(conn) -> dict:
+    """address -> account-wide 30d volume, as of the last cohort.py run.
+
+    NULL is preserved as None and means "never measured", NOT "zero volume".
+    That distinction is load-bearing now that dormancy alone can retire a
+    wallet: 70 of 119 wallets predate the vlm_30d column, and collapsing
+    NULL to 0.0 would retire every one of them for lack of data rather than
+    for lack of trading. Unknown volume never retires anyone; the wallet
+    gets a real number at the next cohort.py refresh.
+    """
+    return {
+        r["address"]: r["vlm_30d"]
+        for r in conn.execute("SELECT address, vlm_30d FROM traders")
+    }
+
+
 # --------------------------------------------------------------------------
 # Position poller
 # --------------------------------------------------------------------------
@@ -60,9 +78,14 @@ def hl_total_account_value(address: str):
 
 def poll_positions(conn) -> dict:
     traders = active_traders(conn)
+    vlm_30d = cached_vlm_30d(conn)
     stats = {"polled": 0, "with_position": 0, "deactivated": 0,
-             "held_offbook": 0, "errors": 0}
+             "retired_dormant": 0, "held_offbook": 0, "held_floor": 0,
+             "errors": 0}
     now_ms = int(time.time() * 1000)
+    # Tracked across the loop so MIN_COHORT_SIZE is enforced against the live
+    # count, not the count at the start of the cycle.
+    active_count = len(traders)
 
     for address, _ in traders:
         try:
@@ -102,9 +125,17 @@ def poll_positions(conn) -> dict:
              position_value, account_value, now_ms),
         )
 
-        # Drop below the floor -> deactivate, but keep the row and its history
-        # so the wallet can be picked back up on the next cohort refresh.
+        # A wallet is retired if it is below the equity floor OR dormant -
+        # either one is sufficient. Dropping out of the leaderboard's ranked
+        # top N is still NOT grounds for removal; cohort.py never retires.
         #
+        # Dormancy is judged on cached 30d volume, and UNKNOWN IS NOT DORMANT:
+        # a NULL vlm_30d means the wallet predates the column, not that it
+        # sat still. Retiring on missing data would have removed 70 of 119
+        # wallets. They get a real number at the next cohort.py refresh.
+        vlm = vlm_30d.get(address)
+        dormant = vlm is not None and vlm <= RETIRE_VLM_30D_FLOOR
+
         # marginSummary.accountValue only covers the DEFAULT perp clearinghouse,
         # while the cohort's $100k floor comes from the leaderboard's TOTAL
         # equity (spot + every perp dex). Comparing them directly retired 35 of
@@ -112,26 +143,54 @@ def poll_positions(conn) -> dict:
         # while holding $402k of spot USDC. So a wallet that looks under the
         # floor gets one confirming `portfolio` call, which reports the same
         # total the leaderboard does. Healthy wallets cost no extra call.
+        total = None
+        below_floor = False
         if account_value < MIN_ACCOUNT_VALUE:
             total = hl_total_account_value(address)
-            if total is None or total < MIN_ACCOUNT_VALUE:
-                conn.execute(
-                    "UPDATE traders SET is_active = 0, removed_at = ? WHERE address = ?",
-                    (now_ms, address),
-                )
-                stats["deactivated"] += 1
-            else:
+            if total is not None and total >= MIN_ACCOUNT_VALUE:
+                # Equity lives outside the default perp clearinghouse.
                 stats["held_offbook"] += 1
                 conn.execute(
                     "UPDATE traders SET account_value = ? WHERE address = ?",
                     (total, address),
                 )
+            else:
+                below_floor = True
             time.sleep(POSITION_CALL_DELAY)
         else:
             conn.execute(
                 "UPDATE traders SET account_value = ? WHERE address = ?",
                 (account_value, address),
             )
+
+        if below_floor or dormant:
+            if active_count <= MIN_COHORT_SIZE:
+                # Would take the panel under its floor. Keep it and say so;
+                # the fix is a cohort refresh, not a smaller panel.
+                stats["held_floor"] += 1
+            else:
+                # Record the equity we actually retired on. Without this the
+                # row keeps a stale account_value - one wallet retired at
+                # $10k of real equity still read $815k from its cohort-time
+                # leaderboard snapshot, making the decision look like a bug.
+                # `total` is None when the wallet was retired for dormancy
+                # alone, or when the confirming call failed; either way, keep
+                # the last known value rather than overwriting it with nothing.
+                if total is not None:
+                    conn.execute(
+                        """UPDATE traders
+                              SET account_value = ?, is_active = 0, removed_at = ?
+                            WHERE address = ?""",
+                        (total, now_ms, address),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE traders SET is_active = 0, removed_at = ? WHERE address = ?",
+                        (now_ms, address),
+                    )
+                stats["deactivated"] += 1
+                stats["retired_dormant"] += 1 if dormant and not below_floor else 0
+                active_count -= 1
 
         stats["polled"] += 1
         conn.commit()
@@ -141,8 +200,10 @@ def poll_positions(conn) -> dict:
     log(
         f"positions: {stats['polled']}/{len(traders)} polled, "
         f"{stats['with_position']} hold {COIN}, "
-        f"{stats['deactivated']} deactivated, "
+        f"{stats['deactivated']} retired "
+        f"({stats['retired_dormant']} for dormancy alone), "
         f"{stats['held_offbook']} kept (equity outside default perp), "
+        f"{stats['held_floor']} kept (would breach MIN_COHORT_SIZE), "
         f"{stats['errors']} errors"
     )
     return stats

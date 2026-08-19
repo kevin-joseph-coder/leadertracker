@@ -57,8 +57,14 @@ wrong in others.
 with windows `day` / `week` / `month` / `allTime`. Rows also carry `prize`
 and `displayName`, which we ignore.
 
-It's a **35 MB** response with **42,246 rows**, of which 10,108 sit in the
-$100k–$1M band. Fetching it takes a few seconds — fine for a daily job.
+It's a **35 MB** response with **42,565 rows** (re-verified 2026-08-19), of
+which **10,379** sit in the $100k–$1M band — the endpoint returns the *whole*
+leaderboard, not a top-N page. Fetching it takes a few seconds — fine for a
+daily job.
+
+Two of the five fields are dead weight: `prize` is `0` on all 42,565 rows,
+and `displayName` is set on only 1,417 (~3%) and is self-chosen. The real
+filter surface is the 12 numbers in `windowPerformances` plus `accountValue`.
 
 ### Fill identity — `hash` is NOT unique
 
@@ -177,6 +183,53 @@ is only deactivated if *that* is under $100k. Healthy wallets cost no extra
 request, so steady-state polling is unchanged. Result: **35 deactivations → 1**
 (that one wallet genuinely fell below the floor).
 
+## Cohort membership
+
+The cohort is a **tracked panel, not a live mirror of the leaderboard**.
+Two rules follow from that, and they are the whole of the membership logic.
+
+### Adding — two passes, BTC-specific (`cohort.py`)
+
+The leaderboard isn't asset-segmented, so its ranking can't be trusted to
+find BTC traders. Selection therefore runs in two passes:
+
+1. **Free pass.** Filter to the $100k–$1M band (~10.4k wallets), rank by
+   account-wide 7d PnL, keep the top `CANDIDATE_POOL`.
+2. **Enrichment pass.** Per candidate: one `userRole` call (must be in
+   `ALLOWED_ROLES` — vaults, agents and sub-accounts trade on someone
+   else's behalf) and the two fills calls. Wallets with **zero BTC fills in
+   the window are dropped**, and the survivors are re-ranked by **BTC
+   realized PnL** via the same `classify.py` used by the poller.
+
+Only the top `TOP_N` of that re-ranked list is stored.
+
+**Measured hit rate: 19 of 60 top candidates (~32%) had any BTC fills**; all
+60 were role `user`. So the pool has to be roughly 3× the target cohort
+size, and the role filter is cheap insurance rather than a heavy filter.
+
+### Retiring — only the poller, only when broke *and* dormant
+
+`cohort.py` **never retires**. Falling out of the ranked top N is explicitly
+not grounds for removal; re-ranking daily and dropping the losers would
+churn membership and leave the charts full of wallets with a few hours of
+history each.
+
+The poller retires a wallet only when **all three** hold:
+
+| Condition | Source |
+| --- | --- |
+| Total equity < `MIN_ACCOUNT_VALUE` | `clearinghouseState`, confirmed by `portfolio` |
+| 30d volume ≤ `RETIRE_VLM_30D_FLOOR` | `traders.vlm_30d`, cached from the leaderboard's `month` window |
+| Active count > `MIN_COHORT_SIZE` | live count, decremented within the cycle |
+
+A below-floor wallet still doing real volume stays. A retirement that would
+take the panel under `MIN_COHORT_SIZE` is refused — the remedy is a cohort
+refresh, not a smaller panel.
+
+Caveat on `vlm_30d`: it is **account-wide, not BTC-only**, and only as fresh
+as the last `cohort.py` run. A wallet added before that column existed reads
+as `0.0` (dormant) until the next refresh.
+
 ## Design notes
 
 **Flat snapshots are recorded.** The position poller writes a
@@ -283,3 +336,8 @@ sign-parsing bug.
 - Cohort refresh is a separate manual/cron run, not part of the poll loop.
 - A wallet that leaves the cohort keeps its rows (`is_active = 0`), so
   history survives membership churn.
+- The cohort has no upper-bound eviction: a wallet that grows past
+  `MAX_ACCOUNT_VALUE` keeps being tracked, since only the equity+dormancy
+  test retires and it only looks downward.
+- Cohort refresh now costs ~15 min at `CANDIDATE_POOL = 300` (one role call
+  plus two paged fills calls per candidate, rate-limit spaced).

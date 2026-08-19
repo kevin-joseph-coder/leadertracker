@@ -15,7 +15,42 @@ MIN_ACCOUNT_VALUE = 100_000.0
 MAX_ACCOUNT_VALUE = 1_000_000.0
 TOP_N = 100
 RANK_WINDOW = "week"  # "day" | "week" | "month" | "allTime"  (week = 7d)
-RANK_METRIC = "pnl"   # "pnl" or "roi"
+RANK_METRIC = "pnl"   # "pnl" or "roi"  (prefilter only - see CANDIDATE_POOL)
+
+# The final cohort is ranked by BTC realized PnL, which can only be computed
+# from a wallet's fills - roughly 2 paged /info calls each. Scoring all ~10k
+# wallets in the account-value band would take hours, so the leaderboard's
+# account-wide RANK_METRIC is used only to shortlist this many candidates,
+# which are then enriched and re-ranked on BTC alone.
+#
+# At FILL_CALL_DELAY = 1.5s that is ~2 calls x 1.5s x 300 = ~15 minutes per
+# cohort refresh, plus a cheap userRole call per candidate. cohort.py is a
+# manual once-a-day job, so a slow run costs nothing operationally.
+CANDIDATE_POOL = 300
+
+# Only wallets whose userRole is in this set are eligible. Vaults, agents and
+# sub-accounts trade on someone else's behalf, so their positions don't
+# represent an individual trader's conviction.
+ALLOWED_ROLES = ("user",)
+
+# Lookback for the BTC enrichment pass. Matches RANK_WINDOW = "week" so the
+# BTC score covers the same period the leaderboard prefilter ranked on.
+BTC_RANK_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000
+
+# --- Cohort retention ---
+# A wallet is retired ONLY when it is both below the equity floor and
+# effectively dormant. Falling out of the ranked top N is explicitly NOT a
+# reason to retire - the cohort is a tracked panel, not a live leaderboard
+# mirror, and churning it would shred the position history the charts read.
+#
+# 30d volume comes from the leaderboard's `month` window, cached on the
+# traders row at cohort-refresh time. It is account-wide (not BTC-only) and
+# only as fresh as the last cohort.py run.
+RETIRE_VLM_30D_FLOOR = 100_000.0
+
+# Never let the active panel shrink below this. If retiring a wallet would
+# cross the line, it stays active regardless of equity or volume.
+MIN_COHORT_SIZE = 100
 
 # --- Tracked asset ---
 COIN = "BTC"

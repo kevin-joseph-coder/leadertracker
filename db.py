@@ -11,7 +11,14 @@ CREATE TABLE IF NOT EXISTS traders (
     is_active INTEGER DEFAULT 1,
     added_at INTEGER,
     removed_at INTEGER,
-    last_fill_time INTEGER
+    last_fill_time INTEGER,
+    -- Account-wide 30d volume from the leaderboard's `month` window, cached
+    -- at cohort-refresh time. The poller reads it to decide whether a
+    -- below-floor wallet is dormant enough to retire.
+    vlm_30d REAL,
+    -- BTC realized PnL over the rank window at the time the wallet was last
+    -- selected. Kept for auditing why a wallet is in the cohort.
+    btc_pnl REAL
 );
 
 CREATE TABLE IF NOT EXISTS fills (
@@ -54,10 +61,35 @@ def connect(path: str = DB_PATH) -> sqlite3.Connection:
     return conn
 
 
+# Columns added after the first release. CREATE TABLE IF NOT EXISTS is a
+# no-op on an existing table, so these have to be applied by hand.
+_ADDED_COLUMNS = {
+    "traders": [
+        ("vlm_30d", "REAL"),
+        ("btc_pnl", "REAL"),
+    ],
+}
+
+
+def migrate(conn: sqlite3.Connection) -> list:
+    """Add any missing columns to an existing database. Returns what it added."""
+    applied = []
+    for table, columns in _ADDED_COLUMNS.items():
+        have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, decl in columns:
+            if name not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                applied.append(f"{table}.{name}")
+    if applied:
+        conn.commit()
+    return applied
+
+
 def init(path: str = DB_PATH) -> sqlite3.Connection:
     conn = connect(path)
     conn.executescript(SCHEMA)
     conn.commit()
+    migrate(conn)
     return conn
 
 

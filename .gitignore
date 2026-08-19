@@ -9,6 +9,11 @@ positions.json
 hourly.json
 *.tmp
 
+# Scheduled cohort refresh + poller output
+cohort.log
+poller.log
+poller.err.log
+
 __pycache__/
 *.py[cod]
 .venv/
