@@ -377,15 +377,17 @@ function renderHourlyTable(payload) {
   document.getElementById("hourlyTable").innerHTML = `
     <table>
       <thead><tr>
-        <th>Hour (UTC)</th><th>Open long</th><th>Close short</th>
-        <th>Open short</th><th>Close long</th><th>Net</th>
+        <th>Hour (UTC)</th><th>Open long</th><th>Close long</th>
+        <th>Open short</th><th>Close short</th><th>Net</th>
       </tr></thead>
       <tbody>${data.map(d => {
+        // Net stays buy-side minus sell-side regardless of column order:
+        // (open long + close short) - (open short + close long).
         const net = d.openLong + d.closeShort - d.openShort - d.closeLong;
         return `<tr>
           <td>${fmtDayHour(d.t)}:00</td>
-          <td>${usd(d.openLong)}</td><td>${usd(d.closeShort)}</td>
-          <td>${usd(d.openShort)}</td><td>${usd(d.closeLong)}</td>
+          <td>${usd(d.openLong)}</td><td>${usd(d.closeLong)}</td>
+          <td>${usd(d.openShort)}</td><td>${usd(d.closeShort)}</td>
           <td class="${net >= 0 ? "pnl-up" : "pnl-dn"}">${usd(net)}</td>
         </tr>`;
       }).join("")}</tbody>
