@@ -158,7 +158,8 @@
       </div>
     </div>
     <p class="panel-note">
-      USD notional per hour. Plotted above the axis is buying pressure, below is selling pressure.
+      USD notional per hour, bucketed on <strong>UTC</strong> hour boundaries.
+      Plotted above the axis is buying pressure, below is selling pressure.
     </p>
     <ul class="legend">
       <li><span class="swatch" style="background:var(--open-long)"></span>Open long <span class="side">↑ buy</span></li>
@@ -200,6 +201,18 @@ const usd = n => {
 };
 const num = (n, d = 4) => n.toLocaleString(undefined, { maximumFractionDigits: d });
 const short = a => a.slice(0, 6) + "…" + a.slice(-4);
+
+// Hour buckets are UTC boundaries - the aggregation SQL floors a ms epoch,
+// which has no timezone. So every label is rendered in UTC as well. Left in
+// local time the two disagree: a whole-hour offset silently relabels each
+// bucket, and a half-hour offset (IST, ACST) prints :30 labels on :00 data.
+// hourCycle h23 is required, not decorative: with hour12:false alone the
+// midnight bucket renders as "24:00" instead of "00:00".
+const UTC = { timeZone: "UTC", hourCycle: "h23" };
+const fmtDay = t => new Date(t).toLocaleDateString(undefined, { ...UTC, month: "short", day: "numeric" });
+const fmtHour = t => new Date(t).toLocaleTimeString(undefined, { ...UTC, hour: "2-digit" });
+const fmtDayHour = t => new Date(t).toLocaleString(undefined,
+  { ...UTC, month: "short", day: "numeric", hour: "2-digit" });
 
 // ---------- summary strip ----------
 function renderStrip(s) {
@@ -318,14 +331,12 @@ function renderChart(payload) {
             autoSkip: false,
             callback(v, i) {
               const d = new Date(labels[i]);
+              // getUTCHours, not getHours - the boundaries these anchor to
+              // are UTC midnight / UTC 6-hour marks, matching the buckets.
               if (hours > 72) {
-                return d.getHours() === 0
-                  ? d.toLocaleDateString(undefined, { month: "short", day: "numeric" })
-                  : "";
+                return d.getUTCHours() === 0 ? fmtDay(labels[i]) : "";
               }
-              return d.getHours() % 6 === 0
-                ? d.toLocaleTimeString(undefined, { hour: "numeric" })
-                : "";
+              return d.getUTCHours() % 6 === 0 ? fmtHour(labels[i]) : "";
             },
           },
         },
@@ -347,8 +358,7 @@ function renderChart(payload) {
           bodyColor: css("--surface-1"),
           padding: 10, cornerRadius: 6, displayColors: true, boxPadding: 3,
           callbacks: {
-            title: items => new Date(labels[items[0].dataIndex])
-              .toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric" }) + ":00",
+            title: items => fmtDayHour(labels[items[0].dataIndex]) + ":00 UTC",
             label: c => `  ${c.dataset.label}: ${usd(Math.abs(c.parsed.y))}`,
             afterBody: items => {
               const d = data[items[0].dataIndex];
@@ -367,13 +377,13 @@ function renderHourlyTable(payload) {
   document.getElementById("hourlyTable").innerHTML = `
     <table>
       <thead><tr>
-        <th>Hour</th><th>Open long</th><th>Close short</th>
+        <th>Hour (UTC)</th><th>Open long</th><th>Close short</th>
         <th>Open short</th><th>Close long</th><th>Net</th>
       </tr></thead>
       <tbody>${data.map(d => {
         const net = d.openLong + d.closeShort - d.openShort - d.closeLong;
         return `<tr>
-          <td>${new Date(d.t).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric" })}</td>
+          <td>${fmtDayHour(d.t)}:00</td>
           <td>${usd(d.openLong)}</td><td>${usd(d.closeShort)}</td>
           <td>${usd(d.openShort)}</td><td>${usd(d.closeLong)}</td>
           <td class="${net >= 0 ? "pnl-up" : "pnl-dn"}">${usd(net)}</td>
@@ -398,7 +408,8 @@ async function load() {
     if (document.getElementById("tableToggle").getAttribute("aria-pressed") === "true") renderHourlyTable(hr);
 
     const age = Date.now() - pos.generated_at;
-    status.textContent = "updated " + new Date(pos.generated_at).toLocaleTimeString();
+    status.textContent = "updated " + new Date(pos.generated_at).toLocaleTimeString(
+      undefined, { ...UTC, hour: "2-digit", minute: "2-digit", second: "2-digit" }) + " UTC";
     status.classList.toggle("stale", age > 15 * 60_000);
   } catch (e) {
     status.textContent = "no data yet — run the poller";

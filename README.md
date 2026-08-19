@@ -177,6 +177,13 @@ short, close long). Position encodes market direction, hue identifies the
 bucket. Tooltips show every value as a positive USD notional plus the hourly
 net.
 
+**All times are UTC.** The aggregation floors a millisecond epoch, so the
+buckets are UTC hour boundaries with no timezone attached; the page renders
+every label in UTC to match. Rendering them in browser-local time instead
+puts the labels out of step with the data — a whole-hour offset silently
+relabels every bucket, and a half-hour offset (IST, ACST) prints `:30`
+labels against `:00` data.
+
 Series colors were checked with the data-viz palette validator in both light
 and dark mode — worst adjacent CVD ΔE 9.2 light / 9.4 dark, worst
 normal-vision ΔE 27.6 / 26.5. Two light-mode series sit below 3:1 contrast
