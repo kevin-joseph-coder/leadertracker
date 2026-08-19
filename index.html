@@ -121,6 +121,10 @@
     font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
     color: var(--text-muted); font-weight: 500; border-bottom: 1px solid var(--axis);
   }
+  thead th.sortable { cursor: pointer; user-select: none; }
+  thead th.sortable:hover, thead th.sortable:focus-visible { color: var(--text-primary); }
+  thead th.sorted { color: var(--text-primary); }
+  thead th .arrow { display: inline-block; min-width: 9px; }
   tbody tr { border-bottom: 1px solid var(--grid); }
   tbody tr:last-child { border-bottom: none; }
   .addr { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
@@ -188,7 +192,7 @@
 <script>
 const REFRESH_MS = 60_000;
 const HOUR = 3600_000;
-let hours = 168, chart = null, lastHourly = null;
+let hours = 168, chart = null, lastHourly = null, lastPositions = [];
 
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
@@ -241,16 +245,47 @@ function renderStrip(s) {
 }
 
 // ---------- positions table ----------
+// Sortable columns. The value extractors return null for missing data so those
+// rows sink to the bottom in both directions instead of sorting as zero.
+const POS_SORTS = {
+  notional: r => r.position_value_usd ?? null,
+  entry:    r => r.entry_px ?? null,
+  pnl:      r => r.unrealized_pnl ?? null,
+};
+let posSort = null; // {key, dir: 1 asc | -1 desc}
+
+function sortPositions(rows) {
+  if (!posSort) return rows;
+  const get = POS_SORTS[posSort.key];
+  return rows.slice().sort((a, b) => {
+    const x = get(a), y = get(b);
+    if (x === null && y === null) return 0;
+    if (x === null) return 1;
+    if (y === null) return -1;
+    return (x - y) * posSort.dir;
+  });
+}
+
+const sortTh = (key, label) => {
+  const on = posSort && posSort.key === key;
+  const arrow = on ? (posSort.dir === 1 ? " ↑" : " ↓") : "";
+  return `<th class="sortable${on ? " sorted" : ""}" data-sort="${key}"
+    aria-sort="${on ? (posSort.dir === 1 ? "ascending" : "descending") : "none"}"
+    role="button" tabindex="0">${label}<span class="arrow">${arrow}</span></th>`;
+};
+
 function renderPositions(rows) {
   const el = document.getElementById("positions");
   if (!rows.length) { el.innerHTML = `<p class="empty">No open BTC positions in the cohort.</p>`; return; }
   el.innerHTML = `
     <table>
       <thead><tr>
-        <th>Wallet</th><th>Side</th><th>Size (BTC)</th><th>Notional</th>
-        <th>Entry price</th><th>Unrealized PnL</th>
+        <th>Wallet</th><th>Side</th><th>Size (BTC)</th>
+        ${sortTh("notional", "Notional")}
+        ${sortTh("entry", "Entry price")}
+        ${sortTh("pnl", "Unrealized PnL")}
       </tr></thead>
-      <tbody>${rows.map(r => {
+      <tbody>${sortPositions(rows).map(r => {
         const long = r.signed_size > 0;
         const pnl = r.unrealized_pnl || 0;
         return `<tr>
@@ -411,7 +446,8 @@ async function load() {
       fetch("hourly.json" + bust).then(r => r.json()),
     ]);
     renderStrip(pos.summary);
-    renderPositions(pos.positions);
+    lastPositions = pos.positions;
+    renderPositions(lastPositions);
     lastHourly = hr;
     renderChart(hr);
     if (document.getElementById("tableToggle").getAttribute("aria-pressed") === "true") renderHourlyTable(hr);
@@ -427,6 +463,24 @@ async function load() {
 }
 
 // ---------- controls ----------
+// Delegated: the header is rewritten on every refresh, so a direct listener
+// would be lost each minute. Cycle desc -> asc -> unsorted.
+function toggleSort(key) {
+  if (!posSort || posSort.key !== key) posSort = { key, dir: -1 };
+  else if (posSort.dir === -1) posSort.dir = 1;
+  else posSort = null;
+  renderPositions(lastPositions);
+}
+document.getElementById("positions").addEventListener("click", e => {
+  const th = e.target.closest("th[data-sort]");
+  if (th) toggleSort(th.dataset.sort);
+});
+document.getElementById("positions").addEventListener("keydown", e => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  const th = e.target.closest("th[data-sort]");
+  if (th) { e.preventDefault(); toggleSort(th.dataset.sort); }
+});
+
 document.querySelectorAll("button[data-hours]").forEach(b => {
   b.addEventListener("click", () => {
     hours = +b.dataset.hours;
