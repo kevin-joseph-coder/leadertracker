@@ -11,22 +11,41 @@ DB_PATH = os.path.join(BASE_DIR, "tracker.db")
 WEB_DIR = BASE_DIR
 
 # --- Cohort selection ---
+# Overall envelope of the tiers below. MIN_ACCOUNT_VALUE is also the poller's
+# retirement equity floor, which is why it stays a standalone constant.
 MIN_ACCOUNT_VALUE = 100_000.0
-MAX_ACCOUNT_VALUE = 1_000_000.0
+MAX_ACCOUNT_VALUE = 5_000_000.0
 TOP_N = 100
 RANK_WINDOW = "week"  # "day" | "week" | "month" | "allTime"  (week = 7d)
-RANK_METRIC = "pnl"   # "pnl" or "roi"  (prefilter only - see CANDIDATE_POOL)
+
+# The prefilter is tiered by account size because no single metric is fair
+# across the whole band. Ranking everyone by dollar PnL lets the $5M accounts
+# crowd out the $100k ones on sheer size; ranking everyone by ROI does the
+# reverse, since a 50% week on $100k beats any realistic return on $5M.
+# Splitting the band lets each tier compete against its own size class.
+#
+# Bounds are [min, max) - a wallet is shortlisted by exactly one tier, and
+# $1M lands in the upper one. `pool` is that tier's candidate budget.
+COHORT_TIERS = (
+    {"min": 100_000.0, "max": 1_000_000.0, "metric": "pnl", "pool": 500},
+    {"min": 1_000_000.0, "max": 5_000_000.0, "metric": "roi", "pool": 100},
+)
 
 # The final cohort is ranked by BTC realized PnL, which can only be computed
 # from a wallet's fills - roughly 2 paged /info calls each. Scoring all ~10k
 # wallets in the account-value band would take hours, so the leaderboard's
-# account-wide RANK_METRIC is used only to shortlist this many candidates,
-# which are then enriched and re-ranked on BTC alone.
+# account-wide tier metrics are used only to shortlist this many candidates
+# in total, which are then enriched and re-ranked on BTC alone.
 #
 # At FILL_CALL_DELAY = 1.5s that is ~2 calls x 1.5s x 300 = ~15 minutes per
 # cohort refresh, plus a cheap userRole call per candidate. cohort.py is a
 # manual once-a-day job, so a slow run costs nothing operationally.
-CANDIDATE_POOL = 300
+#
+# TEMPORARY: the tier pools above are set deep (500 + 100 = 600, vs the usual
+# 300) for a one-off run - budget ~30 min, more once the per-wallet userRole
+# and inter-call sleeps are counted. Trim them back afterwards. Derived from
+# the tiers so the total and the per-tier budgets can't drift apart.
+CANDIDATE_POOL = sum(t["pool"] for t in COHORT_TIERS)
 
 # Only wallets whose userRole is in this set are eligible. Vaults, agents and
 # sub-accounts trade on someone else's behalf, so their positions don't

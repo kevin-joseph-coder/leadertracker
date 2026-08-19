@@ -1,8 +1,9 @@
 """
 Pulls the Hyperliquid leaderboard and selects the cohort in two passes.
 
-Pass 1 (free): filter to the $100k-$1M account value band and shortlist the
-top CANDIDATE_POOL wallets by the leaderboard's account-wide 7-day PnL.
+Pass 1 (free): shortlist each COHORT_TIERS account-size band on its own
+account-wide 7-day metric - dollar PnL for $100k-$1M, ROI for $1M-$5M, so
+neither size class crowds out the other.
 
 Pass 2 (one userRole call + two fills calls per candidate): keep only
 wallets whose role is in ALLOWED_ROLES and that actually traded BTC in the
@@ -55,12 +56,10 @@ from config import (
     BASE_DIR,
     BTC_RANK_LOOKBACK_MS,
     CANDIDATE_POOL,
+    COHORT_TIERS,
     COIN,
     FILL_CALL_DELAY,
-    MAX_ACCOUNT_VALUE,
-    MIN_ACCOUNT_VALUE,
     POSITION_CALL_DELAY,
-    RANK_METRIC,
     RANK_WINDOW,
     TOP_N,
 )
@@ -116,22 +115,28 @@ def parse_rows(raw_rows: list, window: str) -> list:
     return parsed
 
 
-def shortlist(
-    rows: list,
-    min_value: float = MIN_ACCOUNT_VALUE,
-    max_value: float = MAX_ACCOUNT_VALUE,
-    pool: int = CANDIDATE_POOL,
-    metric: str = RANK_METRIC,
-) -> list:
-    """Pass 1: account-value band, then the top `pool` by account-wide metric.
+def shortlist_tier(rows: list, tier: dict) -> list:
+    """Pass 1 for one size class: [min, max) band, top `pool` by its metric.
+
+    Bounds are half-open so adjacent tiers can't shortlist the same wallet
+    twice and pay for its enrichment calls twice over.
+    """
+    band = [r for r in rows if tier["min"] <= r.account_value < tier["max"]]
+    key = ((lambda r: r.window_pnl) if tier["metric"] == "pnl"
+           else (lambda r: r.window_roi))
+    band.sort(key=key, reverse=True)
+    return band[: tier["pool"]]
+
+
+def shortlist(rows: list, tiers: tuple = COHORT_TIERS) -> list:
+    """Pass 1: shortlist each account-size tier on its own metric, concatenated.
 
     This ordering is only a shortlist - it decides who is worth spending API
-    calls on, not who ends up in the cohort.
+    calls on, not who ends up in the cohort. The tiers are ranked on different
+    scales (dollars vs percent), so the combined list is deliberately NOT
+    globally sorted; build_cohort re-ranks everything on BTC PnL anyway.
     """
-    band = [r for r in rows if min_value <= r.account_value <= max_value]
-    key = (lambda r: r.window_pnl) if metric == "pnl" else (lambda r: r.window_roi)
-    band.sort(key=key, reverse=True)
-    return band[:pool]
+    return [r for tier in tiers for r in shortlist_tier(rows, tier)]
 
 
 def score_btc(address: str, fills: list) -> tuple:
@@ -282,10 +287,15 @@ def main():
 
     print(f"Fetched {len(raw)} leaderboard rows")
     print(f"{len(parsed)} rows had a '{RANK_WINDOW}' window entry")
-    print(
-        f"{len(candidates)} candidates in the ${MIN_ACCOUNT_VALUE:,.0f}-"
-        f"${MAX_ACCOUNT_VALUE:,.0f} band, shortlisted by {RANK_METRIC}"
-    )
+    for tier in COHORT_TIERS:
+        picked = len(shortlist_tier(parsed, tier))
+        in_band = sum(1 for r in parsed
+                      if tier["min"] <= r.account_value < tier["max"])
+        print(
+            f"  ${tier['min']:,.0f}-${tier['max']:,.0f}: {picked} of {in_band} "
+            f"in band, top {tier['pool']} by {tier['metric']}"
+        )
+    print(f"{len(candidates)} candidates shortlisted in total")
     print(f"Enriching (role + {COIN} fills). This takes a while...")
 
     now_ms = int(time.time() * 1000)
@@ -320,8 +330,8 @@ def main():
     if len(cohort) < TOP_N:
         print(
             f"  NOTE: fewer than TOP_N={TOP_N}. Only {len(enriched)} of "
-            f"{len(candidates)} candidates qualified - raise CANDIDATE_POOL "
-            f"in config.py for a deeper pool."
+            f"{len(candidates)} candidates qualified - raise the tier "
+            f"`pool` values in config.py for a deeper pool."
         )
 
     out_path = os.path.join(BASE_DIR, "cohort.json")

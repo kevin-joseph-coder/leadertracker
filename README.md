@@ -193,8 +193,12 @@ Two rules follow from that, and they are the whole of the membership logic.
 The leaderboard isn't asset-segmented, so its ranking can't be trusted to
 find BTC traders. Selection therefore runs in two passes:
 
-1. **Free pass.** Filter to the $100k–$1M band (~10.4k wallets), rank by
-   account-wide 7d PnL, keep the top `CANDIDATE_POOL`.
+1. **Free pass.** Split the $100k–$5M band into the `COHORT_TIERS` size
+   classes and rank each on its own account-wide 7d metric — dollar PnL for
+   $100k–$1M, ROI for $1M–$5M — keeping each tier's `pool`. One metric across
+   the whole band isn't fair in either direction: dollar PnL lets the $5M
+   accounts win on size alone, while ROI hands it to the smallest accounts,
+   since a 50% week on $100k beats any realistic return on $5M.
 2. **Enrichment pass.** Per candidate: one `userRole` call (must be in
    `ALLOWED_ROLES` — vaults, agents and sub-accounts trade on someone
    else's behalf) and the two fills calls. Wallets with **zero BTC fills in
