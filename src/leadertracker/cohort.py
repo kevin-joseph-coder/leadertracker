@@ -14,7 +14,7 @@ account-wide performance - a wallet can top it without ever touching BTC.
 Pass 2 is what makes the cohort BTC-specific: the final ordering comes from
 BTC fills alone, and a wallet with no BTC activity is never added.
 
-Run: python cohort.py
+Run: python -m leadertracker.cohort
 Output: cohort.json (the filtered, ranked wallet list) + the `traders`
 table in tracker.db. Membership is ADDITIVE - this script never retires a
 wallet. Falling out of the ranked top N is not grounds for removal; only
@@ -43,19 +43,19 @@ positions to coin == "BTC". Known simplification, not a bug.
 
 import argparse
 import json
-import os
 import time
 from dataclasses import dataclass, asdict
 from typing import Optional
 
-import db
-import hl
-from classify import classify_fills
-from config import (
+from . import apilock
+from . import db
+from . import hl
+from .classify import classify_fills
+from .config import (
     ALLOWED_ROLES,
-    BASE_DIR,
     BTC_RANK_LOOKBACK_MS,
     CANDIDATE_POOL,
+    COHORT_PATH,
     COHORT_TIERS,
     COIN,
     FILL_CALL_DELAY,
@@ -67,6 +67,11 @@ from config import (
 # The leaderboard window that supplies the cached 30d volume the poller's
 # retirement test reads. Not the same thing as RANK_WINDOW.
 VLM_30D_WINDOW = "month"
+
+# How long to wait for the poller to finish its cycle and drop the API lock.
+# One cycle is ~11 min at 155 wallets and grows with the panel, so this is
+# deliberately generous - the scheduled task allows 2h in total.
+POLL_WAIT = 25 * 60
 
 
 @dataclass
@@ -334,7 +339,7 @@ def main():
             f"`pool` values in config.py for a deeper pool."
         )
 
-    out_path = os.path.join(BASE_DIR, "cohort.json")
+    out_path = COHORT_PATH
     with open(out_path, "w") as f:
         json.dump([asdict(r) for r in cohort], f, indent=2)
     print(f"Wrote cohort to {out_path}")
@@ -357,11 +362,21 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    if args.sync_vlm:
-        updated, missing = sync_vlm_30d(hl.fetch_leaderboard())
-        print(f"vlm_30d refreshed for {updated} wallets")
-        if missing:
-            print(f"{missing} not found on the leaderboard - left NULL "
-                  f"(unknown, so they will not be retired for dormancy)")
-    else:
-        main()
+    # Wait out a poll cycle rather than forfeit the day's refresh: this is a
+    # once-daily job, and the poller holds the lock for ~11 minutes at a time.
+    # POLL_WAIT covers a full cycle plus slack.
+    try:
+        with apilock.held("cohort", wait=POLL_WAIT):
+            if args.sync_vlm:
+                updated, missing = sync_vlm_30d(hl.fetch_leaderboard())
+                print(f"vlm_30d refreshed for {updated} wallets")
+                if missing:
+                    print(f"{missing} not found on the leaderboard - left NULL "
+                          f"(unknown, so they will not be retired for dormancy)")
+            else:
+                main()
+    except apilock.Busy as holder:
+        print(f"API lock held by {holder} for over {POLL_WAIT / 60:.0f} min - "
+              f"giving up rather than competing for the rate limit.",
+              file=sys.stderr)
+        sys.exit(1)

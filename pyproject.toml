@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "leadertracker"
+version = "0.1.0"
+description = "Hyperliquid BTC cohort tracker - leaderboard cohort selection, position/fill polling, and a static dashboard"
+requires-python = ">=3.11"
+# No third-party runtime dependencies: the Hyperliquid client in hl.py is
+# written against urllib, and storage is stdlib sqlite3.
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"

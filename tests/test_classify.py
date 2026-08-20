@@ -8,7 +8,7 @@ not invented ones - flips genuinely arrive as a single compound record.
 
 import unittest
 
-from classify import classify_fill, classify_fills, fill_id
+from leadertracker.classify import classify_fill, classify_fills, fill_id
 
 # --- real BTC flip fills, verbatim from userFillsByTime ---
 

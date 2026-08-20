@@ -8,40 +8,73 @@ only, JSON files as the API layer.
 
 ## Quick start
 
-```bash
-python cohort.py            # build the 100-wallet cohort -> cohort.json + traders table
-python poller.py --backfill 168   # optional: seed 7 days of fill history
-python poller.py            # run the pipeline loop (ctrl-c to stop)
+The package lives under `src/`, so put it on the path once per shell — or
+`pip install -e .` and skip it:
 
-# in a second terminal:
-python -m http.server 8000  # then open http://localhost:8000
+```bash
+export PYTHONPATH=src            # Windows: set PYTHONPATH=src
+
+python -m leadertracker.cohort              # build the cohort -> data/cohort.json + traders
+python -m leadertracker.poller --backfill 168   # optional: seed 7 days of fill history
+python -m leadertracker.poller              # run the pipeline loop (ctrl-c to stop)
+
+# in a second terminal - note the web/ root:
+python -m http.server 8000 -d web           # then open http://localhost:8000
 ```
 
 The page must be served over HTTP — opening `index.html` as a `file://` URL
 fails because `fetch()` can't read the JSON files from that origin.
 
-Refresh cohort membership daily (cron / Task Scheduler):
+Refresh cohort membership daily (cron / Task Scheduler — see
+`scheduled_task.xml`):
 
 ```bash
-python cohort.py
+python -m leadertracker.cohort
 ```
 
-## Files
+## Layout
+
+```
+src/leadertracker/   the package
+web/                 index.html + the JSON it fetches (static server root)
+data/                tracker.db, cohort.json  (not web-served)
+logs/                poller.log, cohort.log
+tests/
+```
+
+`web/` and `data/` are separate on purpose: `index.html` fetches
+`positions.json` as a same-directory relative URL, so the exported JSON has
+to sit beside the page. Nothing else does, and the database in particular
+must not be reachable from the static server.
 
 | File | Role |
 |---|---|
-| `config.py` | All tunables — thresholds, intervals, call delays |
-| `db.py` | SQLite schema + connection (`python db.py` initializes) |
+| `config.py` | All tunables — thresholds, intervals, call delays, paths |
+| `db.py` | SQLite schema + connection (`python -m leadertracker.db` initializes) |
 | `hl.py` | Hyperliquid REST client (leaderboard, positions, fills) |
-| `cohort.py` | Cohort selection → `cohort.json` + `traders` |
+| `cohort.py` | Cohort selection → `data/cohort.json` + `traders` |
 | `classify.py` | Fill → bucket classification, including flip splitting |
 | `queries.py` | Open-positions and hourly-aggregate reads |
 | `poller.py` | Position poller, fill poller, JSON export, main loop |
-| `index.html` | The page (Chart.js via CDN, no build step) |
-| `test_classify.py` | `python -m unittest test_classify -v` |
+| `apilock.py` | Cross-process mutex so the poller and cohort refresh never share the rate limit |
+| `web/index.html` | The page (Chart.js via CDN, no build step) |
+| `tests/test_classify.py` | `python -m unittest discover -s tests -t .` |
 
 `poller.py` flags: `--once`, `--positions`, `--fills`, `--export`,
 `--backfill HOURS`.
+
+## The poller and the cohort refresh share one rate limit
+
+Hyperliquid throttles `/info` by request weight per IP, and each script sets
+its delays assuming it is the only caller. Run the daily refresh on top of a
+poll cycle and the combined weight trips 429s — observed in practice, three
+failed candidates in one run.
+
+`apilock.py` serializes them on a lock file. The poller **skips** a cycle
+rather than queueing behind a 50-minute refresh (nothing is lost: fills are
+watermark-driven and catch up, and the page renders unobserved hours as null
+rather than as a flat cohort), while the refresh **waits out** a poll cycle
+rather than forfeiting the day.
 
 ## What the API actually returns
 

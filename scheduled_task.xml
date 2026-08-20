@@ -1,14 +1,24 @@
 <?xml version="1.0" encoding="UTF-16"?>
 <!--
-  Daily cohort refresh at 00:00 UTC ("UTC open").
+  Daily cohort refresh at 05:00 UTC - the quiet hours, chosen so the ~50
+  minute run does not sit on top of a poll cycle during the active session.
 
-  The Z suffix on StartBoundary is load-bearing: Task Scheduler stores
-  triggers in LOCAL time by default, so a plain "18:00:00" would drift by an
-  hour every time Central flips between CST and CDT. With Z the boundary is
-  anchored to UTC and fires at 00:00 UTC year round.
+  The Z suffix is written here for intent, but DO NOT rely on it to pin the
+  run to UTC. Verified 2026-08-19: Task Scheduler converts the boundary to
+  local time at registration and stores it that way - registering
+  "2026-08-20T05:00:00Z" reads back as "2026-08-20T00:00:00-05:00", and
+  Export-ScheduledTask confirms that is what is persisted. An earlier
+  revision of this file claimed Z prevented DST drift; it does not.
 
-  Register with:
-    Register-ScheduledTask -TaskName "HL cohort refresh" -Xml (Get-Content scheduled_task.xml -Raw)
+  The practical consequence: the trigger fires at 00:00 America/Chicago year
+  round, which is 05:00 UTC in CDT and 06:00 UTC in CST. An hour of seasonal
+  drift is acceptable for a quiet-hours job - both times are well clear of
+  the active session. If a fixed UTC instant ever matters, the schedule has
+  to move into the script itself, not the trigger.
+
+  Register with (replaces any existing definition - do not run while a
+  refresh is in flight, it terminates the running instance):
+    Register-ScheduledTask -TaskName "HL cohort refresh" -Force -Xml (Get-Content scheduled_task.xml -Raw)
 -->
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -17,7 +27,7 @@
   </RegistrationInfo>
   <Triggers>
     <CalendarTrigger>
-      <StartBoundary>2026-08-20T00:00:00Z</StartBoundary>
+      <StartBoundary>2026-08-20T05:00:00Z</StartBoundary>
       <Enabled>true</Enabled>
       <ScheduleByDay>
         <DaysInterval>1</DaysInterval>
@@ -50,7 +60,16 @@
   <Actions Context="Author">
     <Exec>
       <Command>C:\Windows\System32\cmd.exe</Command>
-      <Arguments>/c C:\Python311\python.exe cohort.py &gt;&gt; cohort.log 2&gt;&amp;1</Arguments>
+      <!--
+        PYTHONPATH=src makes the package importable without an install step,
+        so a fresh clone runs as-is.
+
+        -u is not optional in a scheduled run: with stdout redirected to a
+        file rather than a console, Python block-buffers it, and a 50 minute
+        refresh writes NOTHING to the log until it exits. Unbuffered output
+        makes progress visible while the job is still running.
+      -->
+      <Arguments>/c set PYTHONPATH=src &amp;&amp; C:\Python311\python.exe -u -m leadertracker.cohort &gt;&gt; logs\cohort.log 2&gt;&amp;1</Arguments>
       <WorkingDirectory>c:\Users\Kevin\Desktop\Projects\leadertracker</WorkingDirectory>
     </Exec>
   </Actions>

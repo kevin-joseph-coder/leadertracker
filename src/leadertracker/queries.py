@@ -6,7 +6,7 @@ MVP. Add one only if the hourly query actually gets slow.
 
 import time
 
-from config import COIN, DEFAULT_HOURS
+from .config import COIN, DEFAULT_HOURS
 
 # Latest snapshot per active trader. The poller writes a zero-size row when
 # a wallet has no BTC position, so "latest row, size != 0" correctly drops

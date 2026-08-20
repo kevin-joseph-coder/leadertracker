@@ -2,13 +2,29 @@
 
 import os
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# This file is src/leadertracker/config.py, so the repo root is three levels
+# up. Everything else derives from it, which keeps the paths correct whether
+# the package is imported from a source checkout or an editable install.
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-DB_PATH = os.path.join(BASE_DIR, "tracker.db")
+# Runtime state that is not served to the browser.
+DATA_DIR = os.path.join(BASE_DIR, "data")
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+
+DB_PATH = os.path.join(DATA_DIR, "tracker.db")
+
+# The ranked cohort dump. Diagnostic output, not read by the page.
+COHORT_PATH = os.path.join(DATA_DIR, "cohort.json")
 
 # Where positions.json / hourly.json are written for the frontend to read.
-# Same directory as index.html so one static file server covers everything.
-WEB_DIR = BASE_DIR
+# This is web/, NOT data/, and deliberately so: index.html fetches them as
+# same-directory relative URLs, so they must sit beside the page for one
+# static file server to cover everything.
+WEB_DIR = os.path.join(BASE_DIR, "web")
+
+# Created on import so a fresh clone can run the pipeline with no setup step.
+for _d in (DATA_DIR, LOG_DIR, WEB_DIR):
+    os.makedirs(_d, exist_ok=True)
 
 # --- Cohort selection ---
 # Overall envelope of the tiers below. MIN_ACCOUNT_VALUE is also the poller's

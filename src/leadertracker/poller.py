@@ -1,12 +1,12 @@
 """The pipeline: poll positions, poll fills, dump JSON for the frontend.
 
-Run: python poller.py              # loop forever
-     python poller.py --once       # a single cycle, useful for testing
-     python poller.py --positions  # just the position poller
-     python poller.py --fills      # just the fill poller
-     python poller.py --export     # just re-dump the JSON files
+Run: python -m leadertracker.poller              # loop forever
+     python -m leadertracker.poller --once       # a single cycle, useful for testing
+     python -m leadertracker.poller --positions  # just the position poller
+     python -m leadertracker.poller --fills      # just the fill poller
+     python -m leadertracker.poller --export     # just re-dump the JSON files
 
-Cohort refresh is deliberately NOT in this loop - run `python cohort.py`
+Cohort refresh is deliberately NOT in this loop - run `python -m leadertracker.cohort`
 once a day (cron / Task Scheduler / by hand).
 """
 
@@ -16,11 +16,12 @@ import os
 import sys
 import time
 
-import db
-import hl
-import queries
-from classify import classify_fills, to_float
-from config import (
+from . import apilock
+from . import db
+from . import hl
+from . import queries
+from .classify import classify_fills, to_float
+from .config import (
     COIN,
     DEFAULT_HOURS,
     FILL_CALL_DELAY,
@@ -317,8 +318,17 @@ def export_json(conn, web_dir: str = WEB_DIR, hours: int = DEFAULT_HOURS) -> Non
 
 def cycle(conn) -> None:
     started = time.time()
-    poll_positions(conn)
-    poll_fills(conn)
+    # Skip rather than queue: cohort.py holds the lock for 30-50 minutes, and
+    # waiting it out would stack cycles. Nothing is lost by missing one - the
+    # fill watermark makes the next cycle pick up the gap, and the page renders
+    # unobserved hours as null rather than as a flat cohort.
+    try:
+        with apilock.held("poller", wait=0):
+            poll_positions(conn)
+            poll_fills(conn)
+    except apilock.Busy as holder:
+        log(f"skipped: API lock held by {holder}")
+        return
     export_json(conn)
     log(f"cycle done in {time.time() - started:.0f}s")
 
@@ -341,18 +351,27 @@ def main() -> None:
         "SELECT COUNT(*) AS n FROM traders WHERE is_active = 1"
     ).fetchone()["n"]
     if n_active == 0:
-        print("No active traders. Run `python cohort.py` first.", file=sys.stderr)
+        print("No active traders. Run `python -m leadertracker.cohort` first.", file=sys.stderr)
         sys.exit(1)
 
-    if args.backfill:
-        log(f"backfilling {args.backfill}h of fills for {n_active} wallets...")
-        poll_fills(conn, lookback_ms=args.backfill * 3600_000)
-        export_json(conn); return
-    if args.positions:
-        poll_positions(conn); export_json(conn); return
-    if args.fills:
-        poll_fills(conn); export_json(conn); return
+    # --export is pure SQL, so it needs no lock. The rest call the API and do.
     if args.export:
+        export_json(conn); return
+
+    if args.backfill or args.positions or args.fills:
+        try:
+            with apilock.held("poller-oneshot", wait=0):
+                if args.backfill:
+                    log(f"backfilling {args.backfill}h of fills for {n_active} wallets...")
+                    poll_fills(conn, lookback_ms=args.backfill * 3600_000)
+                elif args.positions:
+                    poll_positions(conn)
+                else:
+                    poll_fills(conn)
+        except apilock.Busy as holder:
+            print(f"API lock held by {holder} - try again when it finishes.",
+                  file=sys.stderr)
+            sys.exit(1)
         export_json(conn); return
     if args.once:
         cycle(conn); return
