@@ -42,9 +42,25 @@ RANK_WINDOW = "week"  # "day" | "week" | "month" | "allTime"  (week = 7d)
 #
 # Bounds are [min, max) - a wallet is shortlisted by exactly one tier, and
 # $1M lands in the upper one. `pool` is that tier's candidate budget.
+#
+# The pools are lopsided on purpose, from measured marginal yield in the
+# 2026-08-19 run (500 + 100 candidates):
+#
+#   depth 1-100    $100k-$1M   31 eligible per 100
+#   depth 100-500  $100k-$1M   ~10 per 100, flat
+#   depth 501-600  $1M-$5M     25 per 100
+#
+# The lower band decays to ~10% after its first hundred and stays there, so
+# buying depth in it is expensive. The upper band returns 25% and was being
+# sampled at 100 of 1,709 wallets - 6% of the band - which is where the
+# untapped BTC traders actually were. The extra budget therefore goes almost
+# entirely upstairs: 900 of 1,709 is ~53% coverage.
+#
+# Expect the 25% to decay with depth the way the lower tier's 31% did; 10-15%
+# at depth 900 would still beat the lower tier's tail.
 COHORT_TIERS = (
-    {"min": 100_000.0, "max": 1_000_000.0, "metric": "pnl", "pool": 500},
-    {"min": 1_000_000.0, "max": 5_000_000.0, "metric": "roi", "pool": 100},
+    {"min": 100_000.0, "max": 1_000_000.0, "metric": "pnl", "pool": 600},
+    {"min": 1_000_000.0, "max": 5_000_000.0, "metric": "roi", "pool": 900},
 )
 
 # The final cohort is ranked by BTC realized PnL, which can only be computed
@@ -53,14 +69,25 @@ COHORT_TIERS = (
 # account-wide tier metrics are used only to shortlist this many candidates
 # in total, which are then enriched and re-ranked on BTC alone.
 #
-# At FILL_CALL_DELAY = 1.5s that is ~2 calls x 1.5s x 300 = ~15 minutes per
-# cohort refresh, plus a cheap userRole call per candidate. cohort.py is a
-# manual once-a-day job, so a slow run costs nothing operationally.
+# Measured cost is ~4.5s per candidate end to end (600 candidates in 45m18s
+# on 2026-08-19) - the two paged fills calls at FILL_CALL_DELAY plus the sleep
+# after them, plus a cheap userRole call. Rejected roles skip the fills and
+# cost only POSITION_CALL_DELAY, which is why the average lands under the
+# 4.75s worst case.
 #
-# TEMPORARY: the tier pools above are set deep (500 + 100 = 600, vs the usual
-# 300) for a one-off run - budget ~30 min, more once the per-wallet userRole
-# and inter-call sleeps are counted. Trim them back afterwards. Derived from
-# the tiers so the total and the per-tier budgets can't drift apart.
+# At 1500 candidates that is ~1h50m. Two things depend on that number and
+# will not adjust themselves:
+#
+#   - scheduled_task.xml sets ExecutionTimeLimit. It must exceed the run with
+#     margin for 429 retries; cohort.py writes cohort.json and the traders
+#     table only at the very end, so a hard-terminate at the limit discards
+#     the entire run. Currently PT4H.
+#   - apilock makes the poller SKIP cycles for the whole refresh, so a
+#     ~1h50m run leaves a ~2h hole in position_snapshots. No fill data is
+#     lost (the watermark catches up), but the Positioning column reads null
+#     for those hours. This is the real ceiling on pool depth, not wall time.
+#
+# Derived from the tiers so the total and the per-tier budgets can't drift.
 CANDIDATE_POOL = sum(t["pool"] for t in COHORT_TIERS)
 
 # Only wallets whose userRole is in this set are eligible. Vaults, agents and

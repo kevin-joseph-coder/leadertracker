@@ -42,8 +42,8 @@
   </Principals>
   <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <!-- The refresh is ~15-25 min of rate-limited API calls; a laptop on
-         battery must not skip it. -->
+    <!-- The refresh is ~2h of rate-limited API calls; a laptop on battery
+         must not skip it, and must not have it cut off part way. -->
     <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <AllowHardTerminate>true</AllowHardTerminate>
@@ -53,8 +53,17 @@
     <Hidden>false</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <WakeToRun>false</WakeToRun>
-    <!-- Generous: the run is long by design, but must not hang forever. -->
-    <ExecutionTimeLimit>PT2H</ExecutionTimeLimit>
+    <!--
+      Generous: the run is long by design, but must not hang forever.
+
+      PT4H, not PT2H: at CANDIDATE_POOL = 1500 and ~4.5s per candidate the
+      refresh takes ~1h50m, and 429 retries stretch it further. cohort.py
+      writes cohort.json and the traders table only after the last candidate,
+      so a hard-terminate at the limit throws away the whole run rather than
+      landing a partial cohort. Keep this comfortably above the projected
+      runtime whenever the tier pools grow.
+    -->
+    <ExecutionTimeLimit>PT4H</ExecutionTimeLimit>
     <Priority>7</Priority>
   </Settings>
   <Actions Context="Author">
