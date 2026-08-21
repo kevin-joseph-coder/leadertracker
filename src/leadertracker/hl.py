@@ -47,6 +47,32 @@ def clearinghouse_state(address: str) -> dict:
     return info({"type": "clearinghouseState", "user": address})
 
 
+def candle_snapshot(coin: str, interval: str, start_time: int, end_time: int) -> list:
+    """OHLC candles for one coin. Rate limit weight: 2.
+
+    Verified live on 2026-08-20 (BTC, 1d): returns a plain list, oldest first,
+    of
+
+        {"t": 1787270400000, "T": 1787356799999, "s": "BTC", "i": "1d",
+         "o": "73001.0", "c": "74605.0", "h": "75816.0", "l": "73001.0",
+         "v": "24351.09053", "n": 140509}
+
+    Prices are STRINGS, not numbers. `t` is the candle's open time and sits on
+    a UTC boundary. Both ends of the window are inclusive - a 5-day range came
+    back with 6 daily candles - and the last one is the still-forming candle
+    for the current period, so its h/l/c keep moving until the period closes.
+    """
+    return info({
+        "type": "candleSnapshot",
+        "req": {
+            "coin": coin,
+            "interval": interval,
+            "startTime": int(start_time),
+            "endTime": int(end_time),
+        },
+    })
+
+
 def user_role(address: str):
     """Account class: "user", "vault", "subAccount", "agent", or "missing".
 

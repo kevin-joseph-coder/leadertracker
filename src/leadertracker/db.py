@@ -51,6 +51,23 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_time ON position_snapshots(poll_time);
 -- fast as snapshots accumulate (~28k rows/day at a 5-minute cycle).
 CREATE INDEX IF NOT EXISTS idx_snapshots_addr_time
     ON position_snapshots(address, poll_time);
+
+-- OHLC for the price-level ladder's ATR band. Only high/low/close are kept:
+-- true range needs no open, and nothing else reads candles.
+--
+-- The newest row is always the CURRENTLY FORMING candle, whose high/low/close
+-- still move. That's deliberate - today's range belongs in the ATR - and the
+-- primary key makes it self-correcting: every poll re-inserts the same
+-- open_time with INSERT OR REPLACE and the row converges as the day closes.
+CREATE TABLE IF NOT EXISTS candles (
+    coin TEXT NOT NULL,
+    interval TEXT NOT NULL,
+    open_time INTEGER NOT NULL,
+    high REAL NOT NULL,
+    low REAL NOT NULL,
+    close REAL NOT NULL,
+    PRIMARY KEY (coin, interval, open_time)
+);
 """
 
 

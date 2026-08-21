@@ -54,14 +54,14 @@ must not be reachable from the static server.
 | `hl.py` | Hyperliquid REST client (leaderboard, positions, fills) |
 | `cohort.py` | Cohort selection → `data/cohort.json` + `traders` |
 | `classify.py` | Fill → bucket classification, including flip splitting |
-| `queries.py` | Open-positions and hourly-aggregate reads |
-| `poller.py` | Position poller, fill poller, JSON export, main loop |
+| `queries.py` | Open-positions, hourly-aggregate and price-ladder reads |
+| `poller.py` | Position poller, fill poller, candle poller, JSON export, main loop |
 | `apilock.py` | Cross-process mutex so the poller and cohort refresh never share the rate limit |
 | `web/index.html` | The page (Chart.js via CDN, no build step) |
-| `tests/test_classify.py` | `python -m unittest discover -s tests -t .` |
+| `tests/` | `python -m unittest discover -s tests -t .` |
 
-`poller.py` flags: `--once`, `--positions`, `--fills`, `--export`,
-`--backfill HOURS`.
+`poller.py` flags: `--once`, `--positions`, `--fills`, `--candles`,
+`--export`, `--backfill HOURS`.
 
 ## The poller and the cohort refresh share one rate limit
 
@@ -365,6 +365,52 @@ market it fills up with wallets that are long. At the time of writing all 33
 BTC holders were long and none short — verified against the live API, not a
 sign-parsing bug.
 
+## Reading the price ladder
+
+"Positioning by entry price" answers a different question from the tiles: not
+*how much* the cohort is long and short, but *where*. Every open position
+carries `entryPx` — the wallet's **average** entry for that position — so
+bucketing on it shows the levels the cohort's book is actually built on.
+
+Rows run high to low like an order book, shorts left of the centre line and
+longs right of it, both on one shared scale.
+
+**Three things about the numbers, all deliberate:**
+
+**The window is volatility-scaled, not a fixed percentage.** It spans
+`ATR_BAND_MULT` daily ATRs either side of the mark (default 2, so ±2×ATR(14)).
+A fixed ±5% means something different in a dead week than in a violent one; a
+band that breathes keeps the interesting levels in frame in both. At the time
+of writing ATR(14) was ~$1.9k, so the window was ±$3.8k — about ±5.0%.
+
+**Figures are ENTRY notional (`|size| × entry_px`), over the wallets inside
+the window only.** The summary tiles above are mark notional over the whole
+cohort. The two will not add up, and the panel note says so — 42 of 65
+positions sat outside the window in the same snapshot. Levels outside are
+hidden entirely, but the counts of what was skipped are shown, and a position
+with a null `entry_px` is reported separately rather than dropped.
+
+**The mark is derived, not fetched.** `positionValue` is Hyperliquid's
+mark-based notional, so `position_value_usd / abs(signed_size)` *is* the mark
+at that poll — no price endpoint needed, and the number is synchronised with
+the instant the positions were observed. It is taken as a notional-weighted
+**median** over rows from the newest `poll_time` only: a wallet whose
+`clearinghouseState` call failed keeps its previous row, carrying an older
+mark, and both the filter and the median keep that from moving the answer.
+
+Empty levels inside the window are rendered rather than skipped — a gap in the
+book is a fact about it — and the mark is anchored to a level boundary, so the
+"current" rule always falls *between* two rows instead of cutting one in half.
+
+ATR comes from the `candles` table, refreshed once per cycle by a single
+`candleSnapshot` call (weight 2 — a rounding error against the ~4200 the fill
+loop spends). The newest row is always the still-forming candle; the primary
+key makes it self-correcting as the day closes. Keeping candles in SQLite is
+what lets `--export` stay pure SQL with no API access.
+
+If there are no candles yet, run `python -m leadertracker.poller --candles`;
+until then the panel says so rather than guessing.
+
 ## Known limits (deliberate, per the MVP scope)
 
 - Aggregates are computed at read time; no materialized hourly table.
@@ -378,3 +424,9 @@ sign-parsing bug.
   test retires and it only looks downward.
 - Cohort refresh now costs ~15 min at `CANDIDATE_POOL = 300` (one role call
   plus two paged fills calls per candidate, rate-limit spaced).
+- The price ladder hides positions outside the ATR window rather than
+  collapsing them into above/below rows, so its totals are a subset and do
+  not reconcile with the summary tiles. This is stated on the panel.
+- ATR is daily only. `ATR_INTERVAL` accepts any interval `candleSnapshot`
+  supports, but `CANDLE_LOOKBACK_DAYS` is expressed in days, so a much
+  shorter interval would need that window rethought.

@@ -4,6 +4,7 @@ Run: python -m leadertracker.poller              # loop forever
      python -m leadertracker.poller --once       # a single cycle, useful for testing
      python -m leadertracker.poller --positions  # just the position poller
      python -m leadertracker.poller --fills      # just the fill poller
+     python -m leadertracker.poller --candles    # just refresh the ATR candles
      python -m leadertracker.poller --export     # just re-dump the JSON files
 
 Cohort refresh is deliberately NOT in this loop - run `python -m leadertracker.cohort`
@@ -22,6 +23,8 @@ from . import hl
 from . import queries
 from .classify import classify_fills, to_float
 from .config import (
+    ATR_INTERVAL,
+    CANDLE_LOOKBACK_DAYS,
     COIN,
     DEFAULT_HOURS,
     FILL_CALL_DELAY,
@@ -291,11 +294,56 @@ def poll_fills(conn, lookback_ms: int = None) -> dict:
 
 
 # --------------------------------------------------------------------------
+# Candle poller (feeds the price ladder's ATR band)
+# --------------------------------------------------------------------------
+
+def poll_candles(conn, coin: str = COIN, interval: str = ATR_INTERVAL) -> int:
+    """Refresh the OHLC window the ATR is computed from. Returns rows written.
+
+    One request per cycle, weight 2 - a rounding error against the ~4200 the
+    fill loop spends. Re-fetching the whole window rather than just the new
+    candle is what keeps the still-forming one up to date, and it self-heals
+    any gap left by a skipped cycle.
+
+    Failure is logged and swallowed: a missing candle costs the page its
+    ladder for one cycle, which is not worth aborting positions and fills for.
+    """
+    now_ms = int(time.time() * 1000)
+    start = now_ms - CANDLE_LOOKBACK_DAYS * 86_400_000
+    try:
+        raw = hl.candle_snapshot(coin, interval, start, now_ms)
+    except hl.HLError as e:
+        log(f"candles: {coin} {interval} fetch failed: {e}")
+        return 0
+
+    written = 0
+    for c in raw or []:
+        open_time = c.get("t")
+        high, low, close = to_float(c.get("h")), to_float(c.get("l")), to_float(c.get("c"))
+        if open_time is None or not (high and low and close):
+            continue
+        conn.execute(
+            "INSERT OR REPLACE INTO candles"
+            " (coin, interval, open_time, high, low, close) VALUES (?,?,?,?,?,?)",
+            (coin, interval, int(open_time), high, low, close),
+        )
+        written += 1
+
+    conn.commit()
+    log(f"candles: {written} {interval} {coin} candles stored")
+    return written
+
+
+# --------------------------------------------------------------------------
 # JSON export (stands in for a live API; the frontend can't tell the difference)
 # --------------------------------------------------------------------------
 
 def export_json(conn, web_dir: str = WEB_DIR, hours: int = DEFAULT_HOURS) -> None:
     positions = queries.open_positions(conn)
+    # Nested under the positions payload rather than a third file: it is a
+    # different cut of exactly the same rows, and one fetch keeps the page's
+    # ladder and tiles from ever disagreeing about which snapshot they show.
+    positions["levels"] = queries.price_levels(conn)
     hourly = queries.hourly_aggregates(conn, hours=hours)
 
     for name, payload in (("positions.json", positions), ("hourly.json", hourly)):
@@ -313,6 +361,18 @@ def export_json(conn, web_dir: str = WEB_DIR, hours: int = DEFAULT_HOURS) -> Non
         f"{len(hourly['buckets'])} hourly buckets"
     )
 
+    lv = positions["levels"]
+    if lv is None:
+        log("export: no price ladder (need candles and an open position)")
+    else:
+        b = lv["in_band"]
+        log(
+            f"export: ladder at ${lv['mark_px']:,.0f} +/-{lv['band_mult']:g}xATR "
+            f"(${lv['atr']:,.0f}) - {b['positions']} in band, "
+            f"long ${b['long_notional_usd']:,.0f} / short ${b['short_notional_usd']:,.0f}, "
+            f"{lv['excluded']['out_of_band']} outside"
+        )
+
 
 # --------------------------------------------------------------------------
 
@@ -324,6 +384,7 @@ def cycle(conn) -> None:
     # unobserved hours as null rather than as a flat cohort.
     try:
         with apilock.held("poller", wait=0):
+            poll_candles(conn)
             poll_positions(conn)
             poll_fills(conn)
     except apilock.Busy as holder:
@@ -338,6 +399,7 @@ def main() -> None:
     ap.add_argument("--once", action="store_true", help="run one full cycle and exit")
     ap.add_argument("--positions", action="store_true", help="position poller only")
     ap.add_argument("--fills", action="store_true", help="fill poller only")
+    ap.add_argument("--candles", action="store_true", help="ATR candle refresh only")
     ap.add_argument("--export", action="store_true", help="re-dump JSON only")
     ap.add_argument(
         "--backfill", type=int, metavar="HOURS",
@@ -358,7 +420,7 @@ def main() -> None:
     if args.export:
         export_json(conn); return
 
-    if args.backfill or args.positions or args.fills:
+    if args.backfill or args.positions or args.fills or args.candles:
         try:
             with apilock.held("poller-oneshot", wait=0):
                 if args.backfill:
@@ -366,6 +428,8 @@ def main() -> None:
                     poll_fills(conn, lookback_ms=args.backfill * 3600_000)
                 elif args.positions:
                     poll_positions(conn)
+                elif args.candles:
+                    poll_candles(conn)
                 else:
                     poll_fills(conn)
         except apilock.Busy as holder:

@@ -149,3 +149,28 @@ FILL_OVERLAP_MS = 60 * 1000  # 1 minute
 
 # --- Frontend series window ---
 DEFAULT_HOURS = 168
+
+# --- Price-level ladder ---
+# The ladder buckets every open position by its AVERAGE entry price and shows
+# long against short entry notional at each level, so the page can answer
+# "how much is the cohort long and short around here" rather than only "in
+# total".
+#
+# The window is volatility-scaled rather than a fixed percentage: 5% of price
+# means something different in a dead week than in a violent one, and a band
+# that doesn't breathe either buries the interesting levels or clips them off.
+# Two daily ATRs is roughly "where price could plausibly get to in a couple of
+# sessions", which is the range where nearby entries actually matter.
+ATR_INTERVAL = "1d"
+ATR_PERIOD = 14
+ATR_BAND_MULT = 2.0
+
+# 0.5% per level. At $74k that's ~$370 a row and ~16 rows across a typical
+# +/-4% band - fine enough to separate distinct entry clusters, coarse enough
+# to read without scrolling. Widen it if the band starts running long.
+LEVEL_BUCKET_PCT = 0.005
+
+# Wilder's ATR is a running average with a warm-up: seeded on the first
+# ATR_PERIOD true ranges, it takes several more periods before the seed stops
+# showing. 60 days is far past that, and one candle call is cheap.
+CANDLE_LOOKBACK_DAYS = 60

@@ -136,6 +136,43 @@
   .pnl-dn { color: var(--open-short); }
   .empty { color: var(--text-muted); padding: 22px 0; text-align: center; }
   .nodata { color: var(--text-muted); }
+
+  /* --- price ladder --- */
+  .head-figure { margin-left: auto; font-size: 13px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+  #levels table { table-layout: fixed; }
+  #levels tbody tr { border-bottom: none; }
+  #levels td { padding: 3px 10px; }
+  #levels .c-px   { width: 15%; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+  #levels .c-amt  { width: 17%; }
+  #levels .c-bar  { width: 51%; padding: 0 10px; }
+  /* Longs read left-to-right and shorts right-to-left from a shared centre,
+     so the two sides are comparable at a glance instead of by their labels. */
+  .ladder-bar { display: flex; align-items: center; height: 13px; }
+  .ladder-bar > span { flex: 1 1 0; height: 100%; display: flex; min-width: 0; }
+  .ladder-bar > .lhs { justify-content: flex-end; }
+  .ladder-bar > .rhs { border-left: 1px solid var(--axis); }
+  .ladder-bar i { display: block; height: 100%; border-radius: 2px; }
+  .ladder-bar .lhs i { background: var(--short-ink); }
+  .ladder-bar .rhs i { background: var(--long-ink); }
+  /* The longs column sits to the right of the bar, so left-align it: both
+     amounts then read outward from the centre line the same way the bars do. */
+  #levels th:last-child, #levels td.c-amt:last-child { text-align: left; }
+  #levels td.amt-short { color: var(--short-ink); }
+  #levels td.amt-long  { color: var(--long-ink); }
+  #levels td.zero { color: var(--text-muted); }
+  /* The mark sits exactly on a level boundary, so this rule falls between two
+     rows rather than through one. */
+  #levels tr.now td { padding: 0; }
+  #levels tr.now .rule {
+    display: flex; align-items: center; gap: 8px; margin: 5px 0;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--text-primary); font-variant-numeric: tabular-nums;
+  }
+  #levels tr.now .rule::before, #levels tr.now .rule::after {
+    content: ""; height: 1px; background: var(--text-primary); opacity: 0.45;
+  }
+  #levels tr.now .rule::before { width: 46px; flex: none; }
+  #levels tr.now .rule::after { flex: 1 1 auto; }
   #hourlyTable { display: none; margin-top: 14px; }
   #hourlyTable td:first-child { font-variant-numeric: tabular-nums; }
   footer { font-size: 12px; color: var(--text-muted); margin-top: 26px; }
@@ -174,6 +211,16 @@
     </ul>
     <div class="chart-box"><canvas id="flow"></canvas></div>
     <div class="scroll" id="hourlyTable"></div>
+  </section>
+
+  <!-- price ladder -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Positioning by entry price</h2>
+      <span class="head-figure" id="levelsHead"></span>
+    </div>
+    <p class="panel-note" id="levelsNote"></p>
+    <div class="scroll" id="levels"></div>
   </section>
 
   <!-- open positions -->
@@ -243,6 +290,100 @@ function renderStrip(s) {
       <div class="value">${s.active_wallets}</div>
       <div class="sub">${s.wallets_with_position} holding BTC</div>
     </div>`;
+}
+
+// ---------- price ladder ----------
+// Every open position bucketed by its average entry price, long against short,
+// across a volatility-scaled window either side of the current mark.
+//
+// The dollar figures here are ENTRY notional over the wallets inside the band.
+// They are deliberately not the same quantity as the summary tiles, which show
+// mark notional for the whole cohort, and the note under the heading says so -
+// two nearby numbers that don't add up are worse than no numbers at all.
+function renderLevels(lv) {
+  const el = document.getElementById("levels");
+  const head = document.getElementById("levelsHead");
+  const note = document.getElementById("levelsNote");
+
+  if (!lv) {
+    head.textContent = "";
+    note.textContent = "Needs daily candles and at least one open position.";
+    el.innerHTML = `<p class="empty">No ladder yet — run the poller.</p>`;
+    return;
+  }
+
+  const mark = lv.mark_px;
+  const px = p => "$" + num(p, 0);
+  const b = lv.in_band;
+  head.innerHTML = `at <strong>${px(mark)}</strong> · ` +
+    `<span class="v-short">shorts ${usd(b.short_notional_usd)}</span> | ` +
+    `<span class="v-long">longs ${usd(b.long_notional_usd)}</span>`;
+
+  const reach = lv.band_mult * lv.atr;
+  const skipped = lv.excluded.out_of_band + lv.excluded.no_entry_px;
+  note.innerHTML =
+    `Window is ±${lv.band_mult}×ATR(${lv.atr_period}, ${lv.atr_interval}) = ` +
+    `±${usd(reach)} (±${(100 * reach / mark).toFixed(1)}%), in ` +
+    `${(100 * lv.bucket_pct).toFixed(2)}% levels of ~${usd(lv.bucket_usd)}. ` +
+    `${b.positions} position${b.positions === 1 ? "" : "s"} inside it` +
+    (skipped ? `, ${lv.excluded.out_of_band} outside the window` +
+               (lv.excluded.no_entry_px ? ` and ${lv.excluded.no_entry_px} with no entry price` : "") +
+               ` not shown` : "") +
+    `. Figures are <strong>entry</strong> notional over that subset, so they do ` +
+    `not match the mark-notional totals above.` +
+    (lv.mark_source === "candle" ? " Price is the last daily close — the cohort holds nothing." : "");
+
+  if (!lv.rows.length) {
+    el.innerHTML = `<p class="empty">No cohort entries within ±${usd(reach)} of ${px(mark)}.</p>`;
+    return;
+  }
+
+  // Both sides share one scale, so a bar's length means the same thing left
+  // and right. Guard the all-zero case rather than dividing by it.
+  const peak = Math.max(...lv.rows.flatMap(r =>
+    [r.long_notional_usd, r.short_notional_usd]), 0);
+  const w = v => (peak > 0 ? (100 * v / peak).toFixed(2) : 0) + "%";
+  const amt = (v, side) => v > 0
+    ? `<td class="c-amt amt-${side}">${usd(v)}</td>`
+    : `<td class="c-amt zero">—</td>`;
+  const wallets = r => {
+    const parts = [];
+    if (r.short_wallets) parts.push(`${r.short_wallets} short`);
+    if (r.long_wallets) parts.push(`${r.long_wallets} long`);
+    return `${px(r.level_low)}–${px(r.level_high)}` +
+      (parts.length ? ` · ${parts.join(", ")}` : " · empty");
+  };
+
+  // Rows run high to low like an order book. The mark is a level boundary, so
+  // the marker slots cleanly between two of them; findIndex returns -1 when
+  // every level sits above the mark, which puts it last.
+  const at = lv.rows.findIndex(r => r.level_high <= mark + 1e-6);
+  const cut = at === -1 ? lv.rows.length : at;
+  const marker = `<tr class="now"><td colspan="4">
+      <div class="rule">current ${px(mark)}</div></td></tr>`;
+
+  const body = lv.rows.map((r, i) => `
+    <tr title="${wallets(r)}">
+      <td class="c-px">${px(r.level_px)}</td>
+      ${amt(r.short_notional_usd, "short")}
+      <td class="c-bar"><div class="ladder-bar">
+        <span class="lhs"><i style="width:${w(r.short_notional_usd)}"></i></span>
+        <span class="rhs"><i style="width:${w(r.long_notional_usd)}"></i></span>
+      </div></td>
+      ${amt(r.long_notional_usd, "long")}
+    </tr>`);
+  body.splice(cut, 0, marker);
+
+  el.innerHTML = `
+    <table>
+      <thead><tr>
+        <th class="c-px">Level</th>
+        <th class="c-amt">Shorts</th>
+        <th class="c-bar"></th>
+        <th class="c-amt">Longs</th>
+      </tr></thead>
+      <tbody>${body.join("")}</tbody>
+    </table>`;
 }
 
 // ---------- positions table ----------
@@ -447,6 +588,7 @@ async function load() {
       fetch("hourly.json" + bust).then(r => r.json()),
     ]);
     renderStrip(pos.summary);
+    renderLevels(pos.levels ?? null);
     lastPositions = pos.positions;
     renderPositions(lastPositions);
     lastHourly = hr;
